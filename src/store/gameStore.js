@@ -57,10 +57,8 @@ export const useGameStore = create(
   recruitedAllies: [],
   sabotagedBuildings: [], // ["settlementId:buildingType", ...]
   abandonedVehicles: [],      // { id, type, x, z }[]
-  recruitmentAttempted: [],   // ally IDs that have been attempted
 
   // Mission
-  mastersStrength: 100,
   enemyMorale: 100,       // 100–0; reaching 0 = occupation collapses = win
   collapseDay: 40,         // day on which occupation collapses; shortened by sabotage
   capturedHeatMines: 0,   // enemy-captured heat mines; all captured = lose
@@ -110,7 +108,6 @@ export const useGameStore = create(
       enemyMorale: 100,
       collapseDay: 40,
       capturedHeatMines: 0,
-      mastersStrength: 100,
       reportTime: 840,
       currentDay: 1,
       totalTime: 0,
@@ -121,7 +118,6 @@ export const useGameStore = create(
       recruitedAllies: [],
       sabotagedBuildings: [],
       abandonedVehicles: [],
-      recruitmentAttempted: [],
       enemyVehicles: [],
       capturedSettlements: [],
       contestedSettlements: [],
@@ -177,10 +173,6 @@ export const useGameStore = create(
 
   updatePlayer(updates) {
     set(s => ({ player: { ...s.player, ...updates } }))
-  },
-
-  updatePlayerPosition(position) {
-    set(s => ({ player: { ...s.player, position } }))
   },
 
   setTravelMode(mode) {
@@ -418,16 +410,12 @@ export const useGameStore = create(
     const SABOTAGE_FX = {
       synthesis_factory: { morale: 5, days: 3 },
     }
-    const STRENGTH_COST = {
-      synthesis_factory: 15,
-    }
     const fx = SABOTAGE_FX[buildingType] ?? { morale: 3, days: 1 }
     set(s => {
       if (s.sabotagedBuildings.includes(key)) return {}
       const newSabotaged = [...s.sabotagedBuildings, key]
       const newMorale = Math.max(0, s.enemyMorale - fx.morale)
       const newCollapseDay = Math.max(s.currentDay + 2, s.collapseDay - fx.days)
-      const newStrength = Math.max(0, s.mastersStrength - (STRENGTH_COST[buildingType] ?? 5))
 
       // Police station in captured settlement: rescue the captured ally
       let alliesUpdate = {}
@@ -456,39 +444,12 @@ export const useGameStore = create(
       }
       return {
         sabotagedBuildings: newSabotaged,
-        mastersStrength: newStrength,
         enemyMorale: newMorale,
         collapseDay: newCollapseDay,
         gamePhase: won ? 'won' : s.gamePhase,
         player: playerUpdate,
         ...alliesUpdate,
       }
-    })
-  },
-
-  assaultHQ() {
-    // HQ assault is no longer a win condition — a resistance cannot win a frontal war.
-    set(s => ({
-      player: {
-        ...s.player,
-        health: Math.max(0, s.player.health - 30),
-        ammo: Math.max(0, s.player.ammo - 20),
-      },
-    }))
-  },
-
-  freePrisoners(settlementId) {
-    // Release any captured allies at this settlement
-    set(s => {
-      const updatedAllies = s.allies.map(a => {
-        if (a.status === 'captured' && a.location &&
-            s.settlements.find(se => se.id === settlementId &&
-              Math.hypot(se.x - a.location.x, se.z - a.location.z) < 1)) {
-          return { ...a, status: 'free' }
-        }
-        return a
-      })
-      return { allies: updatedAllies }
     })
   },
 
@@ -572,10 +533,6 @@ export const useGameStore = create(
         allies: alliesUpd,
       }
     })
-  },
-
-  recordRecruitAttempt(allyId) {
-    set(s => ({ recruitmentAttempted: [...s.recruitmentAttempted, allyId] }))
   },
 
   captureHeatMine() {
@@ -882,8 +839,6 @@ export const useGameStore = create(
       recruitedAllies: [],
       sabotagedBuildings: [],
       abandonedVehicles: [],
-      recruitmentAttempted: [],
-      mastersStrength: 100,
       gamePhase: 'loading',
       currentDay: 1,
       totalTime: 0,
@@ -918,11 +873,9 @@ export const useGameStore = create(
         recruitedAllies:      s.recruitedAllies,
         sabotagedBuildings:   s.sabotagedBuildings,
         abandonedVehicles:    s.abandonedVehicles,
-        recruitmentAttempted: s.recruitmentAttempted,
         enemyVehicles:        s.enemyVehicles,
         capturedSettlements:  s.capturedSettlements,
         contestedSettlements: s.contestedSettlements,
-        mastersStrength:      s.mastersStrength,
         enemyMorale:          s.enemyMorale,
         collapseDay:          s.collapseDay,
         capturedHeatMines:    s.capturedHeatMines,
@@ -937,8 +890,3 @@ export const useGameStore = create(
     }
   )
 )
-
-function calculateMissionSuccess(ally) {
-  const moraleBonus = (ally.morale - 50) / 100 * 0.2
-  return Math.max(0.05, Math.min(0.95, 0.5 + moraleBonus))
-}

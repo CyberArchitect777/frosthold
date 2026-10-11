@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useGameStore } from './store/gameStore.js'
 import { useOrientation } from './hooks/useOrientation.js'
 import { useGyroscope } from './hooks/useGyroscope.js'
@@ -28,12 +28,9 @@ export default function App() {
   const hasSave       = useGameStore(s => s.hasSave)
   const setUiMode = useGameStore(s => s.setUiMode)
   const setPerformanceTier = useGameStore(s => s.setPerformanceTier)
-  const togglePause = useGameStore(s => s.togglePause)
-  const setGamePhase = useGameStore(s => s.setGamePhase)
   const updatePlayer = useGameStore(s => s.updatePlayer)
   const allies = useGameStore(s => s.allies)
   const settlements = useGameStore(s => s.settlements)
-  const selectAlly = useGameStore(s => s.selectAlly)
   const drainStamina = useGameStore(s => s.drainStamina)
   const drainFuel = useGameStore(s => s.drainFuel)
   const recoverStamina = useGameStore(s => s.recoverStamina)
@@ -57,8 +54,6 @@ export default function App() {
   const switchWeapon          = useGameStore(s => s.switchWeapon)
   const activeWeapon          = useGameStore(s => s.player.activeWeapon)
 
-  const [showOrientationHint, setShowOrientationHint] = useState(false)
-  const [transitionOverlay, setTransitionOverlay] = useState(false)
   const [retreatFlash, setRetreatFlash] = useState(false)
   const [nearSettlement, setNearSettlement] = useState(null)
   const [gyroEnabled, setGyroEnabled] = useState(true)
@@ -387,9 +382,9 @@ export default function App() {
       player: s.player, allies: s.allies, settlements: s.settlements,
       invasionPoint: s.invasionPoint, recruitedAllies: s.recruitedAllies,
       sabotagedBuildings: s.sabotagedBuildings, abandonedVehicles: s.abandonedVehicles,
-      recruitmentAttempted: s.recruitmentAttempted, enemyVehicles: s.enemyVehicles,
+      enemyVehicles: s.enemyVehicles,
       capturedSettlements: s.capturedSettlements, contestedSettlements: s.contestedSettlements,
-      mastersStrength: s.mastersStrength, enemyMorale: s.enemyMorale,
+      enemyMorale: s.enemyMorale,
       collapseDay: s.collapseDay, capturedHeatMines: s.capturedHeatMines,
       totalHeatMines: s.totalHeatMines, currentDay: s.currentDay, totalTime: s.totalTime,
       activeAllyId: s.activeAllyId, originalCharacter: s.originalCharacter,
@@ -588,20 +583,6 @@ export default function App() {
 
       {/* Pause overlay */}
       <PauseMenu />
-
-      {/* Orientation transition overlay */}
-      {transitionOverlay && (
-        <div style={{
-          position: 'fixed', inset: 0,
-          background: 'rgba(10,22,40,0.95)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 500, transition: 'opacity 0.3s',
-          fontFamily: 'Courier New, monospace',
-          color: '#a8d8ea', fontSize: 14,
-        }}>
-          Switching mode...
-        </div>
-      )}
     </div>
   )
 }

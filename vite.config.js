@@ -11,6 +11,8 @@ export default defineConfig({
       manifest: {
         name: 'Frosthold',
         short_name: 'Frosthold',
+        description: "A browser-based PWA inspired by Mike Singleton's 1989 classic Midwinter",
+        categories: ['games'],
         display: 'standalone',
         orientation: 'any',
         background_color: '#0a1628',

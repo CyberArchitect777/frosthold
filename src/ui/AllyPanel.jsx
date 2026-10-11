@@ -5,9 +5,7 @@ export function AllyPanel() {
   const ally            = useGameStore(s => s.selectedAlly)
   const allies          = useGameStore(s => s.allies)
   const player          = useGameStore(s => s.player)
-  const settlements     = useGameStore(s => s.settlements)
   const recruitedAllies = useGameStore(s => s.recruitedAllies)
-  const capturedSettlements = useGameStore(s => s.capturedSettlements)
   const selectAlly      = useGameStore(s => s.selectAlly)
 
   const graphRef = useRef(null)
@@ -21,8 +19,6 @@ export function AllyPanel() {
   if (!ally) return null
 
   const isRecruited = recruitedAllies.includes(ally.id)
-  const station = settlements.find(s => s.allyId === ally.id)
-  const stationCaptured = station ? capturedSettlements.includes(station.id) : false
 
   const dist = Math.hypot(
     player.position.x - ally.location.x,
@@ -127,18 +123,6 @@ export function AllyPanel() {
       )}
     </div>
   )
-}
-
-function actionButtonStyle(bg) {
-  return {
-    background: bg,
-    border: 'none', borderRadius: 4,
-    color: '#fff', cursor: 'pointer',
-    padding: '8px 12px',
-    fontSize: 12,
-    fontFamily: 'Courier New, monospace',
-    textAlign: 'center',
-  }
 }
 
 function drawRelationshipGraph(canvas, focusAlly, allAllies, player) {

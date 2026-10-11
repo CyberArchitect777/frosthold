@@ -2,7 +2,6 @@ import React, { useRef, useEffect, useState } from 'react'
 import { useGameStore } from '../store/gameStore.js'
 import { TRAVEL_MODES } from '../game/travel.js'
 import { sampleHeight } from '../game/terrain.js'
-const ISLAND_HALF = 2500
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -12,7 +11,6 @@ function fmtTime(mins) {
 
 export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
   const player = useGameStore(s => s.player)
-  const mastersStrength   = useGameStore(s => s.mastersStrength)
   const enemyMorale = useGameStore(s => s.enemyMorale)
   const collapseDay       = useGameStore(s => s.collapseDay)
   const currentDay        = useGameStore(s => s.currentDay)

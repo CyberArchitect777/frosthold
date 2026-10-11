@@ -16,7 +16,6 @@ export function StrategyMap({ onBack }) {
   const player = useGameStore(s => s.player)
   const allies = useGameStore(s => s.allies)
   const settlements = useGameStore(s => s.settlements)
-  const mastersStrength   = useGameStore(s => s.mastersStrength)
   const enemyMorale = useGameStore(s => s.enemyMorale)
   const collapseDay       = useGameStore(s => s.collapseDay)
   const capturedHeatMines = useGameStore(s => s.capturedHeatMines)
@@ -620,15 +619,6 @@ export function StrategyMap({ onBack }) {
 
     </div>
   )
-}
-
-function actionBtnStyle(bg) {
-  return {
-    background: bg, border: 'none', borderRadius: 4,
-    color: '#fff', cursor: 'pointer',
-    padding: '6px 12px', fontSize: 11,
-    fontFamily: 'Courier New, monospace',
-  }
 }
 
 const zoomBtnStyle = {

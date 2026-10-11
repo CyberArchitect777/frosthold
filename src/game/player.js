@@ -36,9 +36,6 @@ export class PlayerController {
     // Keyboard state
     this.keys = {}
 
-    // Touch joystick state
-    this.touchDelta = { x: 0, y: 0 }
-
     // Gyroscope input (-1..1)
     this.gyroTilt = { gamma: 0, beta: 0 }
 
@@ -60,9 +57,6 @@ export class PlayerController {
     this._skiingActive = false
     this._braking = false
     this._landingDamage = 0
-
-    // Camera follow offset for snowcat
-    this.chaseCamOffset = new THREE.Vector3(0, 0.7, 3.5)
 
     this._bindInputs()
   }
@@ -88,11 +82,6 @@ export class PlayerController {
   setGyroInput(gamma, beta) {
     this.gyroTilt.gamma = gamma
     this.gyroTilt.beta  = beta
-  }
-
-  setTouchInput(dx, dy) {
-    this.touchDelta.x = dx
-    this.touchDelta.y = dy
   }
 
   setTouchForward(active)  { this.touchForward  = active }
