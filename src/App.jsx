@@ -418,13 +418,14 @@ export default function App() {
   function handleSaveGame() {
     const s = useGameStore.getState()
     const data = {
-      saveVersion: 2,
+      saveVersion: 3,
       worldSeed: s.worldSeed, reportTime: s.reportTime,
       player: s.player, allies: s.allies, settlements: s.settlements,
       invasionPoint: s.invasionPoint, recruitedAllies: s.recruitedAllies,
       sabotagedBuildings: s.sabotagedBuildings, abandonedVehicles: s.abandonedVehicles,
       enemyVehicles: s.enemyVehicles,
       capturedSettlements: s.capturedSettlements, contestedSettlements: s.contestedSettlements,
+      minesAtDayStart: s.minesAtDayStart,
       enemyMorale: s.enemyMorale,
       collapseDay: s.collapseDay, capturedHeatMines: s.capturedHeatMines,
       totalHeatMines: s.totalHeatMines, currentDay: s.currentDay, totalTime: s.totalTime,
@@ -1257,7 +1258,7 @@ function TitleScreen({ onStart, onContinue, hasSave, onLoad }) {
           setLoadError('Invalid save file.')
           return
         }
-        if (data.saveVersion !== 2) {
+        if (data.saveVersion !== 3) {
           setLoadError('This save is from an older version and can\'t be loaded.')
           return
         }

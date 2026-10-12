@@ -40,21 +40,38 @@ function nearest(items, pos) {
   return best
 }
 
-// Pick a target settlement for an enemy vehicle.
-// Prefers resistance-held settlements (70% weight) and settlements roughly
-// away from the invasion point (forward direction).
-function pickEnemyTarget(vehicle, allSettlements, resistanceSettlements, invasionPoint) {
-  const pool = Math.random() < 0.7 && resistanceSettlements?.length > 0
-    ? resistanceSettlements : allSettlements
-  if (!pool?.length) return null
-  const toInvX = invasionPoint ? invasionPoint.x - vehicle.x : 0
-  const toInvZ = invasionPoint ? invasionPoint.z - vehicle.z : 0
-  const forward = pool.filter(se =>
-    se && (se.x - vehicle.x) * toInvX + (se.z - vehicle.z) * toInvZ <= 0
-  )
-  const candidates = forward.length > 0 ? forward : pool.filter(Boolean)
-  if (!candidates.length) return null
-  return candidates[Math.floor(Math.random() * candidates.length)].id
+// Enemy invasion pace (G8). Target: an unopposed enemy wins in about 15 days.
+// Provisional values — see decisions.md and plans/g8-enemy-pace.md.
+const ENEMY_MOVE        = 200 // m per sync
+const ENEMY_START       = 4   // vehicles at the invasion point when the game starts
+const ENEMY_GROW_SYNCS  = 24  // the enemy's target force grows by 1 every 24 syncs (2 days)
+const ENEMY_CAP         = 10  // most vehicles at once (target force and factory clones)
+const SIEGE_SYNCS       = 6   // syncs a vehicle must besiege a settlement to capture it
+const SIEGE_SYNCS_MINE  = 12  // ... a settlement with a heat mine
+const MINE_LOST_DAYS    = 1   // collapse day pushed back per heat mine lost
+const MINE_LOST_MORALE  = 5   // enemy morale gained per heat mine lost
+const SIEGE_BROKEN_DAYS = 1   // collapse day pulled forward by destroying a besieging vehicle
+const KILL_MORALE       = 2   // enemy morale lost per vehicle destroyed
+const STALL_MORALE      = 2   // enemy morale lost per day without taking a heat mine
+
+// Syncs needed to capture a settlement
+export function siegeNeed(settlement) {
+  return settlement?.buildings.includes('heat_mine') ? SIEGE_SYNCS_MINE : SIEGE_SYNCS
+}
+
+// Enemy force the invasion aims to keep in the field after `syncs` syncs
+function enemyTargetForce(syncs) {
+  return Math.min(ENEMY_CAP, ENEMY_START + Math.floor(syncs / ENEMY_GROW_SYNCS))
+}
+
+function spawnEnemy(invasionPoint, i) {
+  return {
+    id: `ev_${Date.now()}_${i}`,
+    x: invasionPoint.x + (Math.random() - 0.5) * 60,
+    z: invasionPoint.z + (Math.random() - 0.5) * 60,
+    targetSettlementId: null,
+    status: 'active',
+  }
 }
 
 export const useGameStore = create(
@@ -104,7 +121,8 @@ export const useGameStore = create(
   // Invasion
   enemyVehicles: [],          // { id, x, z, targetSettlementId, status: 'active' }[]
   capturedSettlements: [],    // settlement IDs fully under enemy control
-  contestedSettlements: [],   // [{ id, vehicleId }] — being contested this sync period
+  contestedSettlements: [],   // [{ id, vehicleId, progress }] — under siege; progress = syncs so far
+  minesAtDayStart: 0,         // capturedHeatMines when the current day began (stalled-offensive check)
   inCombat: false,            // true while engine is running real-time combat
   pendingSync: false,         // sync queued while in combat
 
@@ -161,9 +179,10 @@ export const useGameStore = create(
       recruitedAllies: [startChar.id],
       sabotagedBuildings: [],
       abandonedVehicles: [],
-      enemyVehicles: [],
+      enemyVehicles: Array.from({ length: ENEMY_START }, (_, i) => spawnEnemy(invasionPoint, i)),
       capturedSettlements: [],
       contestedSettlements: [],
+      minesAtDayStart: 0,
       inCombat: false,
       pendingSync: false,
       player: { ...startChar },
@@ -534,11 +553,17 @@ export const useGameStore = create(
   },
 
   destroyEnemyVehicle(vehicleId) {
-    set(s => ({
-      enemyVehicles: s.enemyVehicles.filter(v => v.id !== vehicleId),
-      enemyMorale: Math.max(0, s.enemyMorale - 5),
-      player: { ...s.player, reputation: s.player.reputation + 10 },
-    }))
+    set(s => {
+      // Destroying a besieging vehicle breaks the siege and brings collapse closer
+      const besieging = s.contestedSettlements.some(c => c.vehicleId === vehicleId)
+      return {
+        enemyVehicles: s.enemyVehicles.filter(v => v.id !== vehicleId),
+        contestedSettlements: s.contestedSettlements.filter(c => c.vehicleId !== vehicleId),
+        enemyMorale: Math.max(0, s.enemyMorale - KILL_MORALE),
+        collapseDay: besieging ? Math.max(s.currentDay + 2, s.collapseDay - SIEGE_BROKEN_DAYS) : s.collapseDay,
+        player: { ...s.player, reputation: s.player.reputation + 10 },
+      }
+    })
   },
 
   enterCombat() {
@@ -641,130 +666,88 @@ export const useGameStore = create(
       personalTime: Math.max(a.personalTime, rt),
     }))
 
-    // ---- Enemy invasion phase ----
-    const MOVE_DIST = 800       // world units enemy moves per sync
-    const SPAWN_CAP = 24        // max simultaneous enemy vehicles
-
+    // ---- Enemy invasion phase (G8) ----
+    const byId = id => s.settlements.find(se => se.id === id)
+    const alive = new Set(s.enemyVehicles.filter(v => v.status === 'active').map(v => v.id))
     let capturedSettlements = [...s.capturedSettlements]
-    let contestedSettlements = [...s.contestedSettlements]
-    let enemyVehicles = [...s.enemyVehicles]
+    let contestedSettlements = []
 
-    // 1. Resolve last period's contested settlements → captured
-    for (const { id } of contestedSettlements) {
-      if (!capturedSettlements.includes(id)) {
-        capturedSettlements = [...capturedSettlements, id]
-        // If this settlement has a police station, capture the ally inside
-        const se = s.settlements.find(se => se.id === id)
-        if (se?.buildings.includes('police_station') && se.allyId) {
-          newAllies = newAllies.map(a =>
-            a.id === se.allyId && a.status === 'free' ? { ...a, status: 'captured' } : a
-          )
-        }
+    // 1. Sieges advance; a settlement is captured once its siege has lasted long enough.
+    //    A siege whose vehicle was destroyed is already gone (destroyEnemyVehicle).
+    const besiegersDone = new Set()
+    for (const c of s.contestedSettlements) {
+      if (!alive.has(c.vehicleId) || capturedSettlements.includes(c.id)) continue
+      const progress = (c.progress ?? 0) + 1
+      if (progress < siegeNeed(byId(c.id))) {
+        contestedSettlements.push({ ...c, progress })
+        continue
       }
-    }
-    contestedSettlements = []
-
-    // 2. Move existing enemy vehicles toward their targets, contest on arrival
-    const resistanceIds = s.settlements
-      .filter(se => !capturedSettlements.includes(se.id))
-      .map(se => se.id)
-
-    // Spawn cloned vehicles for newly captured synthesis factories (if not sabotaged)
-    const resistanceSettlements = resistanceIds.map(id => s.settlements.find(se => se.id === id))
-    const newlyCaptured = capturedSettlements.filter(id => !s.capturedSettlements.includes(id))
-    for (const id of newlyCaptured) {
-      const se = s.settlements.find(se => se.id === id)
-      const key = `${id}:synthesis_factory`
-      if (se?.buildings.includes('synthesis_factory') && !s.sabotagedBuildings.includes(key)
-          && enemyVehicles.length < SPAWN_CAP) {
-        const targetId = pickEnemyTarget({ x: se.x, z: se.z }, s.settlements, resistanceSettlements, s.invasionPoint)
-        if (targetId) {
-          enemyVehicles = [...enemyVehicles, {
-            id: `clone_${id}_${Date.now()}`,
-            x: se.x, z: se.z,
-            targetSettlementId: targetId,
-            status: 'active',
-          }]
-        }
-      }
-    }
-
-    enemyVehicles = enemyVehicles
-      .filter(v => v.status === 'active')
-      .map(v => {
-        let { x, z, targetSettlementId } = v
-
-        // Retarget if current target was captured
-        if (capturedSettlements.includes(targetSettlementId)) {
-          targetSettlementId = pickEnemyTarget(v, s.settlements, resistanceIds.map(id => s.settlements.find(se => se.id === id)), s.invasionPoint) ?? targetSettlementId
-        }
-
-        const target = s.settlements.find(se => se.id === targetSettlementId)
-        if (!target) return { ...v, targetSettlementId }
-
-        const dx = target.x - x, dz = target.z - z
-        const dist = Math.hypot(dx, dz)
-
-        if (dist <= MOVE_DIST) {
-          // Arrived — contest this settlement
-          if (!capturedSettlements.includes(targetSettlementId)) {
-            contestedSettlements = [...contestedSettlements, { id: targetSettlementId, vehicleId: v.id }]
-          }
-          // Pick next target
-          const newTarget = pickEnemyTarget(
-            { x: target.x, z: target.z },
-            s.settlements,
-            resistanceIds.filter(id => id !== targetSettlementId).map(id => s.settlements.find(se => se.id === id)),
-            s.invasionPoint
-          )
-          return { ...v, x: target.x, z: target.z, targetSettlementId: newTarget ?? targetSettlementId }
-        }
-
-        const ratio = MOVE_DIST / dist
-        // 70% chance move directly toward target, 30% slight perpendicular drift
-        const perpX = -dz / dist, perpZ = dx / dist
-        const drift = (Math.random() < 0.3 ? (Math.random() - 0.5) * 0.6 : 0)
-        return {
-          ...v,
-          x: x + (dx * ratio + perpX * drift * MOVE_DIST),
-          z: z + (dz * ratio + perpZ * drift * MOVE_DIST),
-          targetSettlementId,
-        }
-      })
-
-    // 3. Spawn new enemy vehicles if below cap
-    if (s.invasionPoint && enemyVehicles.length < SPAWN_CAP && resistanceIds.length > 0) {
-      const spawnCount = Math.min(2, SPAWN_CAP - enemyVehicles.length)
-      for (let i = 0; i < spawnCount; i++) {
-        const jitter = { x: (Math.random() - 0.5) * 60, z: (Math.random() - 0.5) * 60 }
-        const spawnX = s.invasionPoint.x + jitter.x
-        const spawnZ = s.invasionPoint.z + jitter.z
-        const targetId = pickEnemyTarget(
-          { x: spawnX, z: spawnZ },
-          s.settlements,
-          resistanceIds.map(id => s.settlements.find(se => se.id === id)),
-          s.invasionPoint
+      capturedSettlements.push(c.id)
+      besiegersDone.add(c.vehicleId)
+      // If this settlement has a police station, capture the ally inside
+      const se = byId(c.id)
+      if (se?.buildings.includes('police_station') && se.allyId) {
+        newAllies = newAllies.map(a =>
+          a.id === se.allyId && a.status === 'free' ? { ...a, status: 'captured' } : a
         )
-        if (targetId) {
-          enemyVehicles = [...enemyVehicles, {
-            id: `ev_${Date.now()}_${i}`,
-            x: spawnX, z: spawnZ,
-            targetSettlementId: targetId,
-            status: 'active',
-          }]
-        }
       }
     }
+
+    // 2. Reinforcements. The enemy keeps a force that grows on a timetable; anything
+    //    below it (including destroyed vehicles) is replaced from the invasion point,
+    //    one per sync. Captured, unsabotaged factories add clones on top, up to the cap.
+    let enemyVehicles = s.enemyVehicles.filter(v => v.status === 'active')
+    const syncsSoFar = Math.round((rt - 840) / 120)
+    if (s.invasionPoint && enemyVehicles.length < enemyTargetForce(syncsSoFar)) {
+      enemyVehicles.push(spawnEnemy(s.invasionPoint, 0))
+    }
+    for (const id of capturedSettlements.filter(id => !s.capturedSettlements.includes(id))) {
+      const se = byId(id)
+      if (se?.buildings.includes('synthesis_factory') && !s.sabotagedBuildings.includes(`${id}:synthesis_factory`)
+          && enemyVehicles.length < ENEMY_CAP) {
+        enemyVehicles.push({ id: `clone_${id}_${Date.now()}`, x: se.x, z: se.z, targetSettlementId: null, status: 'active' })
+      }
+    }
+
+    // 3. Front line: each free vehicle heads for the nearest resistance settlement that no
+    //    other vehicle is besieging or heading for, and starts a siege when it arrives.
+    const besieging = new Set(contestedSettlements.map(c => c.vehicleId))
+    const claimed = new Set(contestedSettlements.map(c => c.id))
+    enemyVehicles = enemyVehicles.map(v => {
+      if (besieging.has(v.id)) return v
+      let target = null, dist = Infinity
+      for (const se of s.settlements) {
+        if (capturedSettlements.includes(se.id) || claimed.has(se.id)) continue
+        const d = Math.hypot(se.x - v.x, se.z - v.z)
+        if (d < dist) { dist = d; target = se }
+      }
+      if (!target) return v
+      claimed.add(target.id)
+      if (dist <= ENEMY_MOVE) {
+        contestedSettlements.push({ id: target.id, vehicleId: v.id, progress: 0 })
+        return { ...v, x: target.x, z: target.z, targetSettlementId: target.id }
+      }
+      const r = ENEMY_MOVE / dist
+      return { ...v, x: v.x + (target.x - v.x) * r, z: v.z + (target.z - v.z) * r, targetSettlementId: target.id }
+    })
 
     // 4. Heat mines lost this sync: each raises enemy morale and delays collapse
     const isHeatMine = id => s.settlements.find(se => se.id === id)?.buildings.includes('heat_mine')
     const capturedHeatMines = capturedSettlements.filter(isHeatMine).length
     const minesLost = Math.max(0, capturedHeatMines - s.capturedHeatMines)
-    const enemyMorale = Math.min(100, s.enemyMorale + minesLost * 5)
-    const collapseDay = s.collapseDay + minesLost * 3
+    let enemyMorale = Math.min(100, s.enemyMorale + minesLost * MINE_LOST_MORALE)
+    const collapseDay = s.collapseDay + minesLost * MINE_LOST_DAYS
 
-    // 5. Win / lose conditions. The day comes from the team clock (minutes since day 1 00:00).
+    // 5. Stalled offensive: a whole day without taking a heat mine lowers enemy morale
+    //    (counted on the first sync of the new day, before that sync's captures)
     const currentDay = Math.floor(rt / 1440) + 1
+    let minesAtDayStart = s.minesAtDayStart ?? 0
+    if (currentDay > s.currentDay) {
+      if (s.capturedHeatMines <= minesAtDayStart) enemyMorale = Math.max(0, enemyMorale - STALL_MORALE)
+      minesAtDayStart = s.capturedHeatMines
+    }
+
+    // 6. Win / lose conditions. The day comes from the team clock (minutes since day 1 00:00).
     const won = enemyMorale <= 0 || currentDay >= collapseDay
     const lost = s.totalHeatMines > 0 && capturedHeatMines >= s.totalHeatMines
 
@@ -780,6 +763,7 @@ export const useGameStore = create(
       enemyVehicles,
       capturedSettlements,
       contestedSettlements,
+      minesAtDayStart,
       pendingSync: false,
     })
   },
@@ -825,6 +809,7 @@ export const useGameStore = create(
       enemyVehicles: [],
       capturedSettlements: [],
       contestedSettlements: [],
+      minesAtDayStart: 0,
       inCombat: false,
       pendingSync: false,
     })
@@ -834,8 +819,9 @@ export const useGameStore = create(
     }),
     {
       name: 'frosthold-save',
-      // v2: independent characters (G4). Older saves aren't converted; they're dropped.
-      version: 2,
+      // v2: independent characters (G4). v3: sieges and enemy pace (G8).
+      // Older saves aren't converted; they're dropped.
+      version: 3,
       migrate: () => ({}),
       partialize: (s) => ({
         worldSeed:            s.worldSeed,
@@ -850,6 +836,7 @@ export const useGameStore = create(
         enemyVehicles:        s.enemyVehicles,
         capturedSettlements:  s.capturedSettlements,
         contestedSettlements: s.contestedSettlements,
+        minesAtDayStart:      s.minesAtDayStart,
         enemyMorale:          s.enemyMorale,
         collapseDay:          s.collapseDay,
         capturedHeatMines:    s.capturedHeatMines,

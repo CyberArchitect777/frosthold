@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react'
-import { useGameStore, charPosition } from '../store/gameStore.js'
+import { useGameStore, charPosition, siegeNeed } from '../store/gameStore.js'
 import { sampleHeight } from '../game/terrain.js'
 const ISLAND_HALF = 2500
 
@@ -154,6 +154,16 @@ export function StrategyMap({ onBack }) {
         ctx.arc(cx, cy, r, 0, Math.PI * 2)
         ctx.fillStyle = fill
         ctx.fill()
+
+        // Siege progress, e.g. "3/6"
+        const siege = contestedSettlements.find(cs => cs.id === s.id)
+        if (siege) {
+          ctx.fillStyle = '#e67e22'
+          ctx.font = 'bold 9px Courier New'
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(`${siege.progress ?? 0}/${siegeNeed(s)}`, cx + r + 3, cy)
+        }
       }
 
       // Invasion point — red triangle with label
@@ -603,6 +613,18 @@ export function StrategyMap({ onBack }) {
               <span style={{ color: '#888' }}>Buildings: </span>
               {selectedSettlement.buildings.map(b => b.replace(/_/g, ' ')).join('  ·  ')}
             </div>
+            {(() => {
+              const siege = contestedSettlements.find(cs => cs.id === selectedSettlement.id)
+              if (capturedSettlements.includes(selectedSettlement.id))
+                return <div style={{ color: '#e74c3c', marginBottom: 4 }}>ENEMY-HELD</div>
+              if (siege) {
+                const left = siegeNeed(selectedSettlement) - (siege.progress ?? 0)
+                return <div style={{ color: '#e67e22', marginBottom: 4 }}>
+                  UNDER SIEGE {siege.progress ?? 0}/{siegeNeed(selectedSettlement)} · falls in {left} sync{left === 1 ? '' : 's'} unless the vehicle is destroyed
+                </div>
+              }
+              return null
+            })()}
             {(() => {
               const here = allies.filter(a => a.id !== activeAllyId && charPosition(a) && Math.hypot(charPosition(a).x - selectedSettlement.x, charPosition(a).z - selectedSettlement.z) < 55 && a.status !== 'dead')
               return here.length > 0 ? (
