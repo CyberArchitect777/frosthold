@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react'
-import { useGameStore } from '../store/gameStore.js'
+import { useGameStore, charPosition } from '../store/gameStore.js'
 import { TRAVEL_MODES } from '../game/travel.js'
 import { sampleHeight } from '../game/terrain.js'
 
@@ -16,6 +16,7 @@ export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
   const currentDay        = useGameStore(s => s.currentDay)
   const reportTime        = useGameStore(s => s.reportTime)
   const allies = useGameStore(s => s.allies)
+  const activeAllyId = useGameStore(s => s.activeAllyId)
   const settlements = useGameStore(s => s.settlements)
   const invasionPoint = useGameStore(s => s.invasionPoint)
   const abandonedVehicles = useGameStore(s => s.abandonedVehicles)
@@ -161,7 +162,7 @@ export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
     )}
 
     {/* Minimap */}
-    <Minimap player={player} allies={allies} settlements={settlements} invasionPoint={invasionPoint} abandonedVehicles={abandonedVehicles} />
+    <Minimap player={player} allies={allies} activeAllyId={activeAllyId} settlements={settlements} invasionPoint={invasionPoint} abandonedVehicles={abandonedVehicles} />
     </>
   )
 }
@@ -240,7 +241,7 @@ function getCompassDir(radians) {
 const MAP_SIZE = 110 // canvas px
 const MINIMAP_VIEW_RADIUS = 225 // world units (metres) visible from player centre
 
-function Minimap({ player, allies, settlements, invasionPoint, abandonedVehicles }) {
+function Minimap({ player, allies, activeAllyId, settlements, invasionPoint, abandonedVehicles }) {
   const canvasRef = useRef(null)
 
   useEffect(() => {
@@ -313,8 +314,9 @@ function Minimap({ player, allies, settlements, invasionPoint, abandonedVehicles
 
     // All living allies (colour-coded by status)
     for (const ally of allies) {
-      if (ally.status === 'dead') continue
-      const { mx, my } = worldToMap(ally.location.x, ally.location.z)
+      if (ally.status === 'dead' || ally.id === activeAllyId) continue
+      const apos = charPosition(ally)
+      const { mx, my } = worldToMap(apos.x, apos.z)
       ctx.beginPath()
       ctx.arc(mx, my, 2, 0, Math.PI * 2)
       ctx.fillStyle = ally.status === 'recruited' ? '#3498db'
@@ -381,7 +383,7 @@ function Minimap({ player, allies, settlements, invasionPoint, abandonedVehicles
     ctx.textAlign = 'center'
     ctx.fillText('N', w / 2, 10)
 
-  }, [player.position, player.rotation, allies, settlements, invasionPoint, abandonedVehicles])
+  }, [player.position, player.rotation, allies, activeAllyId, settlements, invasionPoint, abandonedVehicles])
 
   return (
     <canvas

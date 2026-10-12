@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useGameStore } from './store/gameStore.js'
+import { useGameStore, withActive } from './store/gameStore.js'
 import { useOrientation } from './hooks/useOrientation.js'
 import { useGyroscope } from './hooks/useGyroscope.js'
 import { GameEngine, detectPerformanceTier } from './game/engine.js'
@@ -22,8 +22,8 @@ export default function App() {
   const isPaused = useGameStore(s => s.isPaused)
   const worldSeed = useGameStore(s => s.worldSeed)
   const selectedAlly = useGameStore(s => s.selectedAlly)
+  const activeAllyId = useGameStore(s => s.activeAllyId)
 
-  const initWorld     = useGameStore(s => s.initWorld)
   const continueGame  = useGameStore(s => s.continueGame)
   const hasSave       = useGameStore(s => s.hasSave)
   const setUiMode = useGameStore(s => s.setUiMode)
@@ -55,6 +55,7 @@ export default function App() {
   const activeWeapon          = useGameStore(s => s.player.activeWeapon)
 
   const [retreatFlash, setRetreatFlash] = useState(false)
+  const [landFirst, setLandFirst] = useState(false)
   const [nearSettlement, setNearSettlement] = useState(null)
   const [gyroEnabled, setGyroEnabled] = useState(true)
   const [terrainDebug, setTerrainDebug] = useState(null)
@@ -83,7 +84,7 @@ export default function App() {
   // Rotating to portrait while skiing → return to hub
   useEffect(() => {
     if (gamePhase === 'playing' && orientation === 'portrait' && uiMode === 'action') {
-      setUiMode('hub')
+      leaveAction()
     }
   }, [orientation]) // eslint-disable-line
 
@@ -94,12 +95,9 @@ export default function App() {
   useEffect(() => {
     if (prevUiMode.current === 'action' && uiMode === 'hub') {
       if (nearSettlement) chargeEntryTime()
-      const { activeAllyId, player, allies, reportTime } = useGameStore.getState()
-      const activePersonalTime = activeAllyId
-        ? (allies.find(a => a.id === activeAllyId)?.personalTime ?? 720)
-        : (player.personalTime ?? 720)
-      const overrun = activePersonalTime >= reportTime
-      setProfileAllyId(overrun ? undefined : activeAllyId)
+      const { activeAllyId, player, reportTime } = useGameStore.getState()
+      const overrun = (player.personalTime ?? 720) >= reportTime
+      setProfileAllyId(overrun || !activeAllyId ? undefined : activeAllyId)
     }
     prevUiMode.current = uiMode
   }, [uiMode]) // eslint-disable-line
@@ -269,6 +267,7 @@ export default function App() {
   // Head knocked out → force exit from action (unconscious)
   useEffect(() => {
     if (playerInjuries?.head === 'out' && uiMode === 'action') {
+      if (useGameStore.getState().player.travelMode === 'paramotor') abandonVehicle()
       setUiMode('hub')
     }
   }, [playerInjuries, uiMode])
@@ -281,6 +280,46 @@ export default function App() {
     }
     engineRef.current?.setGyroInput(gyro.gamma, gyro.beta)
   }, [gyro.gamma, gyro.beta, gyro.permitted, gyroEnabled, snipeState])
+
+  // Active character went down (killed, captured or rescued): stop combat and sniping,
+  // and show the Team screen so the owner can pick who to play next.
+  useEffect(() => {
+    if (activeAllyId !== null || gamePhase !== 'playing') return
+    engineRef.current?.endCombat()
+    if (snipeStateRef.current) {
+      engineRef.current?.exitSnipeMode()
+      setSnipeState(null)
+      setSnipeFlash(null)
+    }
+    setProfileAllyId(undefined)
+  }, [activeAllyId]) // eslint-disable-line
+
+  // Leave the 3D view for the Team screen — not while flying (land first)
+  function leaveAction() {
+    if (useGameStore.getState().player.travelMode === 'paramotor') {
+      setLandFirst(true)
+      setTimeout(() => setLandFirst(false), 2000)
+      return
+    }
+    setUiMode('hub')
+  }
+
+  // Back into the 3D view: needs a deployed character who isn't frozen
+  function canEnterAction() {
+    const { activeAllyId, player, reportTime } = useGameStore.getState()
+    return !!activeAllyId && (player.personalTime ?? 720) < reportTime
+  }
+
+  function handleSwitch(id) {
+    if (!switchCharacter(id)) return
+    const p = useGameStore.getState().player
+    engineRef.current?.placePlayer({
+      x: p.position.x, z: p.position.z,
+      rotationY: p.rotation?.y ?? 0, travelMode: p.travelMode,
+    })
+    setUiMode('action')
+    setProfileAllyId(undefined)
+  }
 
   function handleSnipe({ buildingType, x, z }) {
     const height = 8
@@ -335,15 +374,16 @@ export default function App() {
     function handleKey(e) {
       if (e.code === 'Tab') {
         e.preventDefault()
-        setUiMode(uiMode === 'action' ? 'hub' : 'action')
+        if (uiMode === 'action') leaveAction()
+        else if (canEnterAction()) setUiMode('action')
       }
       if (e.code === 'Escape' && uiMode === 'action') {
         if (snipeStateRef.current) handleExitSnipe()
-        else setUiMode('hub')
+        else leaveAction()
       }
       if (e.code === 'KeyE') {
         if (snipeStateRef.current) handleExitSnipe()
-        else setUiMode('hub')
+        else if (uiMode === 'action') leaveAction()
       }
       if (e.code === 'Space' && uiMode === 'action') {
         e.preventDefault()
@@ -378,6 +418,7 @@ export default function App() {
   function handleSaveGame() {
     const s = useGameStore.getState()
     const data = {
+      saveVersion: 2,
       worldSeed: s.worldSeed, reportTime: s.reportTime,
       player: s.player, allies: s.allies, settlements: s.settlements,
       invasionPoint: s.invasionPoint, recruitedAllies: s.recruitedAllies,
@@ -387,7 +428,7 @@ export default function App() {
       enemyMorale: s.enemyMorale,
       collapseDay: s.collapseDay, capturedHeatMines: s.capturedHeatMines,
       totalHeatMines: s.totalHeatMines, currentDay: s.currentDay, totalTime: s.totalTime,
-      activeAllyId: s.activeAllyId, originalCharacter: s.originalCharacter,
+      activeAllyId: s.activeAllyId, downReport: s.downReport,
       performanceTier: s.performanceTier, hasSave: true,
     }
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
@@ -400,7 +441,7 @@ export default function App() {
   }
 
   if (gamePhase === 'menu') {
-    return <TitleScreen onStart={initWorld} onContinue={continueGame} hasSave={hasSave} onLoad={loadGame} />
+    return <TitleScreen onStart={() => useGameStore.getState().newGame()} onContinue={continueGame} hasSave={hasSave} onLoad={loadGame} />
   }
 
   if (gamePhase === 'won') {
@@ -447,7 +488,7 @@ export default function App() {
           onBack={() => setProfileAllyId(undefined)}
           onMap={() => setUiMode('strategy')}
           onSki={() => { setUiMode('action'); setProfileAllyId(undefined) }}
-          onSwitch={(id) => { switchCharacter(id); setUiMode('action'); setProfileAllyId(undefined) }}
+          onSwitch={handleSwitch}
           onSnipe={handleSnipe}
         />
       )}
@@ -475,6 +516,20 @@ export default function App() {
           engineRef={engineRef}
           fireRef={gunSightFireRef}
         />
+      )}
+
+      {/* Can't leave the 3D view while flying */}
+      {uiMode === 'action' && landFirst && (
+        <div style={{
+          position: 'fixed', top: 56, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(60,40,10,0.9)',
+          border: '1px solid rgba(230,176,32,0.7)',
+          color: '#e6b020', fontFamily: 'Courier New, monospace',
+          fontSize: 11, letterSpacing: 3, padding: '4px 14px',
+          borderRadius: 4, zIndex: 150,
+        }}>
+          LAND FIRST
+        </div>
       )}
 
       {/* Retreat flash */}
@@ -563,7 +618,7 @@ export default function App() {
       {/* Strategy / Enter button */}
       {uiMode === 'action' && (
         <button
-          onClick={() => setUiMode('hub')}
+          onClick={() => snipeState ? handleExitSnipe() : leaveAction()}
           style={{
             position: 'fixed', top: 12, right: 12,
             background: nearSettlement ? 'rgba(40,80,40,0.9)' : 'rgba(10,22,40,0.8)',
@@ -597,32 +652,33 @@ function fmtTime(mins) {
 // ---- Strategy Hub — team overview screen ----
 function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies, abandonedVehicles, onCollectVehicle }) {
   const player            = useGameStore(s => s.player)
-  const originalCharacter = useGameStore(s => s.originalCharacter)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
+  const recruitedAllies   = useGameStore(s => s.recruitedAllies)
+  const downReport        = useGameStore(s => s.downReport)
+  const clearDownReport   = useGameStore(s => s.clearDownReport)
   const reportTime        = useGameStore(s => s.reportTime)
   const enemyMorale = useGameStore(s => s.enemyMorale)
   const collapseDay       = useGameStore(s => s.collapseDay)
   const currentDay        = useGameStore(s => s.currentDay)
 
-  const recruited = (allies ?? []).filter(a => a.status === 'recruited')
-  const roster = [
-    {
-      id: null,
-      name: originalCharacter?.name ?? player.name,
-      personalTime: player.personalTime ?? 720,
-      health: player.health,
-      stamina: player.stamina,
-    },
-    ...recruited,
-  ]
+  // Everyone who has joined the team; the active character's live copy folded in
+  const roster = withActive(allies ?? [], activeAllyId, player)
+    .filter(a => recruitedAllies.includes(a.id))
+  const available = roster.filter(c => c.status === 'recruited')
 
-  const anyFrozen   = roster.some(c => (c.personalTime ?? 720) >= reportTime)
-  const anyApproach = roster.some(c => { const m = reportTime - (c.personalTime ?? 720); return m <= 15 && m > 0 })
+  const anyFrozen   = available.some(c => (c.personalTime ?? 720) >= reportTime)
+  const anyApproach = available.some(c => { const m = reportTime - (c.personalTime ?? 720); return m <= 15 && m > 0 })
   const syncUrgent  = anyFrozen || anyApproach
 
-  const nearbyVehicle = (abandonedVehicles ?? []).find(v =>
+  const nearbyVehicle = activeAllyId && (abandonedVehicles ?? []).find(v =>
     Math.hypot(v.x - player.position.x, v.z - player.position.z) < 10
   )
+
+  const DOWN_TEXT = {
+    killed:   'was killed.',
+    captured: 'was captured and is held at an enemy police station. Blow it up to free them.',
+    rescued:  'was rescued by locals and is recovering until the next sync.',
+  }
 
   return (
     <div style={{
@@ -640,6 +696,22 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies,
       <div style={{ fontSize: 10, color: '#446688', letterSpacing: 1, marginBottom: 16 }}>
         ENEMY MORALE <span style={{ color: enemyMorale <= 30 ? '#27ae60' : enemyMorale <= 60 ? '#e6b020' : '#e74c3c', fontWeight: 'bold' }}>{enemyMorale}%</span>
       </div>
+
+      {downReport && (
+        <div style={{
+          width: 'min(380px, 94vw)', padding: '10px 14px', marginBottom: 14,
+          background: 'rgba(60,20,20,0.95)', border: '1px solid rgba(220,80,80,0.6)',
+          borderRadius: 6, fontSize: 11, color: '#ee9999', letterSpacing: 1, lineHeight: 1.5,
+        }}>
+          <b>{downReport.name}</b> {DOWN_TEXT[downReport.outcome]}
+          {!activeAllyId && <div style={{ color: '#a8d8ea', marginTop: 4 }}>Choose who to deploy next.</div>}
+          <button onClick={clearDownReport} style={{
+            marginTop: 8, background: 'transparent', border: '1px solid rgba(220,80,80,0.5)',
+            borderRadius: 4, color: '#ee9999', cursor: 'pointer', padding: '3px 12px',
+            fontSize: 9, fontFamily: 'Courier New, monospace', letterSpacing: 2,
+          }}>OK</button>
+        </div>
+      )}
 
       {/* SYNC button */}
       <button
@@ -734,14 +806,15 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies,
       <div style={{ width: 'min(380px, 94vw)', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {roster.map(char => {
           const pt       = char.personalTime ?? 720
-          const frozen   = pt >= reportTime
+          const gone     = char.status !== 'recruited'   // dead or captured
+          const frozen   = gone || pt >= reportTime
           const mLeft    = reportTime - pt
-          const approach = mLeft <= 15 && mLeft > 0
+          const approach = !gone && mLeft <= 15 && mLeft > 0
           const isActive = char.id === activeAllyId
 
           return (
             <button
-              key={char.id ?? 'player'}
+              key={char.id}
               onClick={frozen ? undefined : () => onProfile(char.id)}
               disabled={frozen}
               style={{
@@ -757,7 +830,8 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies,
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 11, letterSpacing: 2, fontWeight: 'bold' }}>{char.name}</span>
                   {isActive && <span style={{ fontSize: 8, color: '#a8d8ea', letterSpacing: 1, border: '1px solid rgba(168,216,234,0.4)', borderRadius: 3, padding: '1px 4px' }}>ACTIVE</span>}
-                  {frozen && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>FROZEN</span>}
+                  {gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>{char.status === 'dead' ? 'KILLED' : 'CAPTURED'}</span>}
+                  {frozen && !gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>FROZEN</span>}
                   {approach && !frozen && <span style={{ fontSize: 8, color: '#e6b020', letterSpacing: 1 }}>SYNC {Math.round(mLeft)}m</span>}
                 </div>
                 <span style={{
@@ -1181,6 +1255,10 @@ function TitleScreen({ onStart, onContinue, hasSave, onLoad }) {
         const data = JSON.parse(ev.target.result)
         if (!data.worldSeed || !data.player || !data.settlements) {
           setLoadError('Invalid save file.')
+          return
+        }
+        if (data.saveVersion !== 2) {
+          setLoadError('This save is from an older version and can\'t be loaded.')
           return
         }
         setLoadError(null)

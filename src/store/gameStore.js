@@ -6,6 +6,40 @@ import { initTerrain, findInvasionPoint } from '../game/terrain.js'
 const INITIAL_SEED = Math.floor(Math.random() * 100000)
 const INITIAL_PLAYER_CHAR = generatePlayerCharacter(INITIAL_SEED)
 
+// When a character's health reaches 0 (G5). Provisional values — see decisions.md.
+const DEATH_CHANCE   = 0.25  // otherwise captured or rescued
+const CAPTURE_RADIUS = 400   // m — an enemy vehicle this close means capture
+const DOWN_HEALTH    = 25    // health after being captured or rescued
+
+const NO_INJURIES = { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' }
+
+// Kit every character starts with (the starting character and each recruit)
+const STARTING_KIT = {
+  health: 100, stamina: 100, missiles: 1, ammo: 50, dynamite: 0, fuel: 100,
+  activeWeapon: 'missile', travelMode: 'ski', vehicle: null,
+}
+
+// `player` is the live copy of the active character; `allies` holds every character's
+// record (team members included). This returns `allies` with the live copy folded in.
+export function withActive(allies, activeAllyId, player) {
+  if (!activeAllyId) return allies
+  return allies.map(a => a.id === activeAllyId ? { ...a, ...player } : a)
+}
+
+// Where a character is now: team members have a position, others sit at their home settlement.
+export function charPosition(a) {
+  return a.position ?? a.location
+}
+
+function nearest(items, pos) {
+  let best = null, bestD = Infinity
+  for (const it of items) {
+    const d = Math.hypot(it.x - pos.x, it.z - pos.z)
+    if (d < bestD) { best = it; bestD = d }
+  }
+  return best
+}
+
 // Pick a target settlement for an enemy vehicle.
 // Prefers resistance-held settlements (70% weight) and settlements roughly
 // away from the invasion point (forward direction).
@@ -54,7 +88,7 @@ export const useGameStore = create(
   allies: [],
   settlements: [],
   invasionPoint: null, // { x, z } — coastline point where enemy forces land
-  recruitedAllies: [],
+  recruitedAllies: [],    // ids of everyone who has joined the team (starting character included)
   sabotagedBuildings: [], // ["settlementId:buildingType", ...]
   abandonedVehicles: [],      // { id, type, x, z }[]
 
@@ -77,8 +111,8 @@ export const useGameStore = create(
   // UI
   uiMode: 'hub', // 'hub' | 'action' | 'strategy'
   selectedAlly: null,
-  activeAllyId: null,       // null = original player character
-  originalCharacter: null,  // saved on initWorld
+  activeAllyId: null,       // id of the character being played; null = none deployed
+  downReport: null,         // { name, outcome: 'killed'|'captured'|'rescued' } shown on the Team screen
   isPaused: false,
 
   // Performance tier
@@ -97,13 +131,21 @@ export const useGameStore = create(
     const startX = invasionPoint.x * 0.5
     const startZ = invasionPoint.z * 0.5
     const totalHeatMines = settlements.filter(s => s.buildings.includes('heat_mine')).length
-    set(s => ({
-      allies,
+    const startChar = {
+      ...playerChar,
+      ...STARTING_KIT,
+      position: { x: startX, y: 2, z: startZ },
+      rotation: { y: 0 },
+      reputation: 10,
+      inventory: [],
+      injuries: { ...NO_INJURIES },
+    }
+    set({
+      allies: [startChar, ...allies],
       settlements,
       invasionPoint,
       gamePhase: 'playing',
       hasSave: true,
-      originalCharacter: { name: s.player.name, vehicle: null },
       totalHeatMines,
       enemyMorale: 100,
       collapseDay: 40,
@@ -111,11 +153,12 @@ export const useGameStore = create(
       reportTime: 840,
       currentDay: 1,
       totalTime: 0,
-      activeAllyId: null,
+      activeAllyId: startChar.id,
+      downReport: null,
       selectedAlly: null,
       uiMode: 'hub',
       isPaused: false,
-      recruitedAllies: [],
+      recruitedAllies: [startChar.id],
       sabotagedBuildings: [],
       abandonedVehicles: [],
       enemyVehicles: [],
@@ -123,26 +166,8 @@ export const useGameStore = create(
       contestedSettlements: [],
       inCombat: false,
       pendingSync: false,
-      player: {
-        name: s.player.name,
-        position: { x: startX, y: 2, z: startZ },
-        rotation: { y: 0 },
-        relationships: playerChar.relationships,
-        personalTime: 720,
-        health: 100,
-        stamina: 100,
-        travelMode: 'ski',
-        vehicle: null,
-        inventory: [],
-        reputation: 10,
-        fuel: 100,
-        missiles: 1,
-        ammo: 50,
-        dynamite: 0,
-        activeWeapon: 'missile',
-        injuries: { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' },
-      },
-    }))
+      player: { ...startChar },
+    })
   },
 
   continueGame() {
@@ -183,28 +208,10 @@ export const useGameStore = create(
     set(s => {
       const stamina = Math.max(0, s.player.stamina - amount)
       const health = stamina === 0 ? Math.max(0, s.player.health - amount * 0.5) : s.player.health
-      if (health <= 0) {
-        const backup = s.allies.find(a => a.status === 'recruited' && a.id !== s.activeAllyId)
-        if (backup) {
-          return {
-            player: {
-              ...s.player, name: backup.name,
-              position: { x: backup.location.x, y: 2, z: backup.location.z },
-              health: 100, stamina: 100, travelMode: 'ski',
-            },
-            activeAllyId: backup.id,
-          }
-        }
-        if (s.activeAllyId !== null && s.originalCharacter) {
-          return {
-            player: { ...s.player, name: s.originalCharacter.name, health: 80, stamina: 100, travelMode: 'ski', vehicle: null },
-            activeAllyId: null,
-          }
-        }
-        return { player: { ...s.player, stamina, health }, gamePhase: 'lost' }
-      }
       return { player: { ...s.player, stamina, health } }
     })
+    const s = get()
+    if (s.activeAllyId && s.player.health <= 0) s.characterDown()
   },
 
   recoverStamina(amount) {
@@ -225,31 +232,70 @@ export const useGameStore = create(
   takeDamage(amount) {
     set(s => {
       const health = Math.max(0, s.player.health - amount)
-      if (health <= 0) {
-        // Try another recruited ally first
-        const backup = s.allies.find(a => a.status === 'recruited' && a.id !== s.activeAllyId)
-        if (backup) {
-          return {
-            player: {
-              ...s.player, name: backup.name,
-              position: { x: backup.location.x, y: 2, z: backup.location.z },
-              health: 100, stamina: 100, travelMode: 'ski',
-            },
-            activeAllyId: backup.id,
-          }
-        }
-        // If playing as a recruited ally, fall back to the original character
-        if (s.activeAllyId !== null && s.originalCharacter) {
-          return {
-            player: { ...s.player, name: s.originalCharacter.name, health: 80, stamina: 100, travelMode: 'ski', vehicle: null },
-            activeAllyId: null,
-          }
-        }
-        return { player: { ...s.player, health }, gamePhase: 'lost' }
-      }
       return { player: { ...s.player, health } }
     })
+    const s = get()
+    if (s.activeAllyId && s.player.health <= 0) s.characterDown()
   },
+
+  // The active character's health reached 0 (G5): killed, captured or rescued by locals.
+  // Leaves nobody deployed; the Team screen shows what happened and the owner picks who's next.
+  characterDown(roll = Math.random()) {
+    set(s => {
+      const me = s.player
+      const pos = me.position
+      const abandoned = me.vehicle
+        ? [...s.abandonedVehicles, { id: `v_${Date.now()}`, type: me.vehicle, x: pos.x, z: pos.z }]
+        : s.abandonedVehicles
+
+      const held = se => s.capturedSettlements.includes(se.id)
+      const enemyNear = s.enemyVehicles.some(v => Math.hypot(v.x - pos.x, v.z - pos.z) <= CAPTURE_RADIUS)
+      const closest = nearest(s.settlements, pos)
+      const prison = nearest(s.settlements.filter(se =>
+        held(se) && se.buildings.includes('police_station') &&
+        !s.sabotagedBuildings.includes(`${se.id}:police_station`)
+      ), pos)
+      const refuge = nearest(s.settlements.filter(se => !held(se)), pos)
+
+      let outcome
+      if (roll < DEATH_CHANCE) outcome = 'killed'
+      else if ((enemyNear || (closest && held(closest))) && prison) outcome = 'captured'
+      else if (refuge) outcome = 'rescued'
+      else outcome = prison ? 'captured' : 'killed'
+
+      const down = { ...me, vehicle: null, travelMode: 'ski', speed: 0 }
+      if (outcome === 'killed') {
+        Object.assign(down, { status: 'dead', health: 0 })
+      } else if (outcome === 'captured') {
+        Object.assign(down, {
+          status: 'captured', heldAt: prison.id, health: DOWN_HEALTH, stamina: 0,
+          missiles: 0, ammo: 0, dynamite: 0,
+          position: { x: prison.x, y: 2, z: prison.z },
+        })
+      } else {
+        // Frozen until the next sync
+        Object.assign(down, {
+          health: DOWN_HEALTH, stamina: 0,
+          personalTime: Math.max(me.personalTime, s.reportTime),
+          position: { x: refuge.x, y: 2, z: refuge.z },
+        })
+      }
+
+      const allies = s.allies.map(a => a.id === s.activeAllyId ? { ...a, ...down } : a)
+      const anyoneLeft = allies.some(a => s.recruitedAllies.includes(a.id) && a.status === 'recruited')
+      return {
+        allies,
+        player: down,
+        activeAllyId: null,
+        abandonedVehicles: abandoned,
+        downReport: { name: me.name, outcome },
+        uiMode: 'hub',
+        gamePhase: anyoneLeft ? s.gamePhase : 'lost',
+      }
+    })
+  },
+
+  clearDownReport() { set({ downReport: null }) },
 
   recruitAlly(allyId) {
     const s = get()
@@ -269,7 +315,11 @@ export const useGameStore = create(
     }
 
     set(s => ({
-      allies: s.allies.map(a => a.id === allyId ? { ...a, status: 'recruited' } : a),
+      allies: s.allies.map(a => a.id === allyId ? {
+        ...a, ...STARTING_KIT, status: 'recruited',
+        position: { x: a.location.x, y: 2, z: a.location.z }, rotation: { y: 0 },
+        reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
+      } : a),
       recruitedAllies: [...s.recruitedAllies, allyId],
       player: { ...s.player, reputation: s.player.reputation + 5 },
     }))
@@ -366,40 +416,22 @@ export const useGameStore = create(
 
   acquireSnowcat() {
     set(s => {
-      const alreadyTaken = s.originalCharacter?.vehicle === 'snowcat' ||
-                           s.allies.some(a => a.vehicle === 'snowcat')
+      const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
+        .some(a => a.vehicle === 'snowcat' && a.status !== 'dead')
       if (alreadyTaken) return {}
-      let origChar = s.originalCharacter
-      let alliesUpd = s.allies
-      if (s.activeAllyId === null) {
-        origChar = { ...origChar, vehicle: 'snowcat' }
-      } else {
-        alliesUpd = s.allies.map(a => a.id === s.activeAllyId ? { ...a, vehicle: 'snowcat' } : a)
-      }
       return {
         player: { ...s.player, travelMode: 'snowcat', fuel: 100, vehicle: 'snowcat' },
-        originalCharacter: origChar,
-        allies: alliesUpd,
       }
     })
   },
 
   ascendCableCar() {
     set(s => {
-      const alreadyTaken = s.originalCharacter?.vehicle === 'paramotor' ||
-                           s.allies.some(a => a.vehicle === 'paramotor')
+      const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
+        .some(a => a.vehicle === 'paramotor' && a.status !== 'dead')
       if (alreadyTaken) return {}
-      let origChar = s.originalCharacter
-      let alliesUpd = s.allies
-      if (s.activeAllyId === null) {
-        origChar = { ...origChar, vehicle: 'paramotor' }
-      } else {
-        alliesUpd = s.allies.map(a => a.id === s.activeAllyId ? { ...a, vehicle: 'paramotor' } : a)
-      }
       return {
         player: { ...s.player, travelMode: 'paramotor', vehicle: 'paramotor' },
-        originalCharacter: origChar,
-        allies: alliesUpd,
       }
     })
   },
@@ -417,19 +449,25 @@ export const useGameStore = create(
       const newMorale = Math.max(0, s.enemyMorale - fx.morale)
       const newCollapseDay = Math.max(s.currentDay + 2, s.collapseDay - fx.days)
 
-      // Police station in captured settlement: rescue the captured ally
+      // Police station in captured settlement: free its own officer and any team members held there
       let alliesUpdate = {}
       if (buildingType === 'police_station') {
         const settlement = s.settlements.find(se => se.id === settlementId)
-        const capturedAlly = settlement?.allyId
-          ? s.allies.find(a => a.id === settlement.allyId && a.status === 'captured')
-          : null
-        if (capturedAlly) {
+        const freed = s.allies.filter(a => a.status === 'captured' &&
+          (a.id === settlement?.allyId || a.heldAt === settlementId))
+        if (freed.length > 0) {
+          const ids = freed.map(a => a.id)
+          const here = { x: settlement.x, y: 2, z: settlement.z }
           alliesUpdate = {
-            allies: s.allies.map(a =>
-              a.id === capturedAlly.id ? { ...a, status: 'recruited' } : a
-            ),
-            recruitedAllies: [...s.recruitedAllies, capturedAlly.id],
+            allies: s.allies.map(a => {
+              if (!ids.includes(a.id)) return a
+              // A team member keeps their record; a first-time recruit gets the starting kit
+              const fresh = s.recruitedAllies.includes(a.id) ? {} : {
+                ...STARTING_KIT, rotation: { y: 0 }, reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
+              }
+              return { ...a, ...fresh, status: 'recruited', heldAt: null, position: here }
+            }),
+            recruitedAllies: [...s.recruitedAllies, ...ids.filter(id => !s.recruitedAllies.includes(id))],
           }
         }
       }
@@ -453,44 +491,22 @@ export const useGameStore = create(
     })
   },
 
+  // Save the active character's live copy into their record and load another character.
+  // Returns false if the switch isn't allowed.
   switchCharacter(allyId) {
-    set(s => {
-      // Save current character's vehicle
-      let origChar = s.originalCharacter
-      let alliesUpd = s.allies
-      if (s.activeAllyId === null) {
-        origChar = { ...(origChar ?? {}), vehicle: s.player.vehicle ?? null }
-      } else {
-        alliesUpd = s.allies.map(a =>
-          a.id === s.activeAllyId ? { ...a, vehicle: s.player.vehicle ?? null } : a
-        )
-      }
-
-      if (allyId === null) {
-        const orig = origChar
-        if (!orig) return {}
-        return {
-          player: { ...s.player, name: orig.name, travelMode: orig.vehicle ?? 'ski', vehicle: orig.vehicle ?? null },
-          activeAllyId: null,
-          originalCharacter: origChar,
-          allies: alliesUpd,
-        }
-      }
-      const newChar = alliesUpd.find(a => a.id === allyId)
-      if (!newChar || newChar.status !== 'recruited') return {}
-      return {
-        player: {
-          ...s.player,
-          name: newChar.name,
-          position: { x: newChar.location.x, y: 2, z: newChar.location.z },
-          travelMode: newChar.vehicle ?? 'ski',
-          vehicle: newChar.vehicle ?? null,
-        },
-        activeAllyId: allyId,
-        originalCharacter: origChar,
-        allies: alliesUpd,
-      }
+    const s = get()
+    if (s.inCombat) return false
+    if (s.player.travelMode === 'paramotor' && s.activeAllyId) return false  // land first
+    const target = s.allies.find(a => a.id === allyId)
+    if (!target || target.status !== 'recruited' || !s.recruitedAllies.includes(allyId)) return false
+    if (allyId === s.activeAllyId) return true
+    const allies = withActive(s.allies, s.activeAllyId, s.player)
+    set({
+      allies,
+      player: { ...allies.find(a => a.id === allyId) },
+      activeAllyId: allyId,
     })
+    return true
   },
 
   abandonVehicle() {
@@ -498,18 +514,9 @@ export const useGameStore = create(
       const type = s.player.vehicle
       if (!type) return {}
       const abandoned = { id: `v_${Date.now()}`, type, x: s.player.position.x, z: s.player.position.z }
-      let origChar = s.originalCharacter
-      let alliesUpd = s.allies
-      if (s.activeAllyId === null) {
-        origChar = { ...(origChar ?? {}), vehicle: null }
-      } else {
-        alliesUpd = s.allies.map(a => a.id === s.activeAllyId ? { ...a, vehicle: null } : a)
-      }
       return {
         abandonedVehicles: [...s.abandonedVehicles, abandoned],
         player: { ...s.player, vehicle: null, travelMode: 'ski' },
-        originalCharacter: origChar,
-        allies: alliesUpd,
       }
     })
   },
@@ -519,33 +526,9 @@ export const useGameStore = create(
       if (s.player.vehicle) return {}
       const v = s.abandonedVehicles.find(v => v.id === vehicleId)
       if (!v) return {}
-      let origChar = s.originalCharacter
-      let alliesUpd = s.allies
-      if (s.activeAllyId === null) {
-        origChar = { ...(origChar ?? {}), vehicle: v.type }
-      } else {
-        alliesUpd = s.allies.map(a => a.id === s.activeAllyId ? { ...a, vehicle: v.type } : a)
-      }
       return {
         abandonedVehicles: s.abandonedVehicles.filter(av => av.id !== vehicleId),
         player: { ...s.player, vehicle: v.type, travelMode: v.type, ...(v.type === 'snowcat' ? { fuel: 50 } : {}) },
-        originalCharacter: origChar,
-        allies: alliesUpd,
-      }
-    })
-  },
-
-  captureHeatMine() {
-    set(s => {
-      const captured = s.capturedHeatMines + 1
-      const newCollapseDay = s.collapseDay + 3
-      const newMorale = Math.min(100, s.enemyMorale + 5)
-      const lost = s.totalHeatMines > 0 && captured >= s.totalHeatMines
-      return {
-        capturedHeatMines: captured,
-        collapseDay: newCollapseDay,
-        enemyMorale: newMorale,
-        gamePhase: lost ? 'lost' : s.gamePhase,
       }
     })
   },
@@ -578,8 +561,6 @@ export const useGameStore = create(
   advanceTime(dt) {
     set(s => {
       const total = s.totalTime + dt
-      const day = Math.floor(total / 86400) + 1
-      const won = s.gamePhase === 'playing' && day >= s.collapseDay
 
       // Personal time advances 1 game-minute per real second (1:1 ratio).
       // advanceTime is only called from the engine, which only runs in action mode,
@@ -589,40 +570,20 @@ export const useGameStore = create(
       const newSec  = Math.floor(total)
       const minsGained = newSec - prevSec // 0 most frames, 1 once per second
 
-      let playerUpdate = s.player
-      let alliesUpdate = s.allies
-      if (minsGained > 0) {
-        if (s.activeAllyId === null) {
-          playerUpdate = { ...s.player, personalTime: s.player.personalTime + minsGained }
-        } else {
-          alliesUpdate = s.allies.map(a =>
-            a.id === s.activeAllyId ? { ...a, personalTime: a.personalTime + minsGained } : a
-          )
-        }
-      }
-
       return {
         totalTime: total,
-        currentDay: day,
-        gamePhase: won ? 'won' : s.gamePhase,
-        player: playerUpdate,
-        allies: alliesUpdate,
+        player: minsGained > 0
+          ? { ...s.player, personalTime: s.player.personalTime + minsGained }
+          : s.player,
       }
     })
   },
 
   // Charge one minute of personal time for entering a building.
   chargeEntryTime() {
-    set(s => {
-      if (s.activeAllyId === null) {
-        return { player: { ...s.player, personalTime: s.player.personalTime + 1 } }
-      }
-      return {
-        allies: s.allies.map(a =>
-          a.id === s.activeAllyId ? { ...a, personalTime: a.personalTime + 1 } : a
-        ),
-      }
-    })
+    set(s => s.activeAllyId
+      ? { player: { ...s.player, personalTime: s.player.personalTime + 1 } }
+      : {})
   },
 
   // Synchronise all watches: fire situation report, auto-rest characters with
@@ -671,15 +632,12 @@ export const useGameStore = create(
       return Math.min(100, stamina + gain)
     }
 
-    const newPlayer = {
-      ...s.player,
-      stamina: applyRest(s.player.personalTime, s.player.stamina, s.player.position),
-      personalTime: Math.max(s.player.personalTime, rt),
-    }
-
-    let newAllies = s.allies.map(a => ({
+    // Every watch moves up to the report time; only free team members rest, each where they are
+    let newAllies = withActive(s.allies, s.activeAllyId, s.player).map(a => ({
       ...a,
-      stamina: applyRest(a.personalTime, a.stamina ?? 100, a.location),
+      stamina: a.status === 'recruited' && s.recruitedAllies.includes(a.id)
+        ? applyRest(a.personalTime, a.stamina ?? 100, charPosition(a))
+        : a.stamina,
       personalTime: Math.max(a.personalTime, rt),
     }))
 
@@ -717,7 +675,8 @@ export const useGameStore = create(
     for (const id of newlyCaptured) {
       const se = s.settlements.find(se => se.id === id)
       const key = `${id}:synthesis_factory`
-      if (se?.buildings.includes('synthesis_factory') && !s.sabotagedBuildings.includes(key)) {
+      if (se?.buildings.includes('synthesis_factory') && !s.sabotagedBuildings.includes(key)
+          && enemyVehicles.length < SPAWN_CAP) {
         const targetId = pickEnemyTarget({ x: se.x, z: se.z }, s.settlements, resistanceSettlements, s.invasionPoint)
         if (targetId) {
           enemyVehicles = [...enemyVehicles, {
@@ -797,13 +756,25 @@ export const useGameStore = create(
       }
     }
 
-    // 4. Win / lose conditions
-    const won = s.enemyMorale <= 0 || s.currentDay >= s.collapseDay
-    const lost = s.totalHeatMines > 0 && capturedSettlements.length >= s.totalHeatMines
+    // 4. Heat mines lost this sync: each raises enemy morale and delays collapse
+    const isHeatMine = id => s.settlements.find(se => se.id === id)?.buildings.includes('heat_mine')
+    const capturedHeatMines = capturedSettlements.filter(isHeatMine).length
+    const minesLost = Math.max(0, capturedHeatMines - s.capturedHeatMines)
+    const enemyMorale = Math.min(100, s.enemyMorale + minesLost * 5)
+    const collapseDay = s.collapseDay + minesLost * 3
+
+    // 5. Win / lose conditions. The day comes from the team clock (minutes since day 1 00:00).
+    const currentDay = Math.floor(rt / 1440) + 1
+    const won = enemyMorale <= 0 || currentDay >= collapseDay
+    const lost = s.totalHeatMines > 0 && capturedHeatMines >= s.totalHeatMines
 
     set({
       reportTime: rt + 120,
-      player: newPlayer,
+      currentDay,
+      capturedHeatMines,
+      enemyMorale,
+      collapseDay,
+      player: s.activeAllyId ? { ...newAllies.find(a => a.id === s.activeAllyId) } : s.player,
       allies: newAllies,
       gamePhase: won ? 'won' : lost ? 'lost' : s.gamePhase,
       enemyVehicles,
@@ -845,7 +816,7 @@ export const useGameStore = create(
       uiMode: 'hub',
       selectedAlly: null,
       activeAllyId: null,
-      originalCharacter: null,
+      downReport: null,
       enemyMorale: 100,
       collapseDay: 40,
       capturedHeatMines: 0,
@@ -863,6 +834,9 @@ export const useGameStore = create(
     }),
     {
       name: 'frosthold-save',
+      // v2: independent characters (G4). Older saves aren't converted; they're dropped.
+      version: 2,
+      migrate: () => ({}),
       partialize: (s) => ({
         worldSeed:            s.worldSeed,
         reportTime:           s.reportTime,
@@ -883,7 +857,7 @@ export const useGameStore = create(
         currentDay:           s.currentDay,
         totalTime:            s.totalTime,
         activeAllyId:         s.activeAllyId,
-        originalCharacter:    s.originalCharacter,
+        downReport:           s.downReport,
         performanceTier:      s.performanceTier,
         hasSave:              s.hasSave,
       }),

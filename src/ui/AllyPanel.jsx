@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react'
-import { useGameStore } from '../store/gameStore.js'
+import { useGameStore, charPosition } from '../store/gameStore.js'
 
 export function AllyPanel() {
   const ally            = useGameStore(s => s.selectedAlly)
@@ -21,8 +21,8 @@ export function AllyPanel() {
   const isRecruited = recruitedAllies.includes(ally.id)
 
   const dist = Math.hypot(
-    player.position.x - ally.location.x,
-    player.position.z - ally.location.z
+    player.position.x - charPosition(ally).x,
+    player.position.z - charPosition(ally).z
   )
 
   const statusColor = {

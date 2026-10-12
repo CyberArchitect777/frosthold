@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useGameStore } from '../store/gameStore.js'
+import { useGameStore, withActive, charPosition } from '../store/gameStore.js'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -24,7 +24,6 @@ const BUILDING_TILE_DEFS = {
 export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSwitch, onSnipe }) {
   const allies            = useGameStore(s => s.allies)
   const player            = useGameStore(s => s.player)
-  const originalCharacter = useGameStore(s => s.originalCharacter)
   const reportTime        = useGameStore(s => s.reportTime)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
   const settlements       = useGameStore(s => s.settlements)
@@ -46,24 +45,12 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const [feedback, setFeedback] = useState(null)
   function flash(msg) { setFeedback(msg); setTimeout(() => setFeedback(null), 2500) }
 
-  const isPlayerChar = allyId === null
-  const isActive     = allyId === activeAllyId
-
-  const char = isPlayerChar
-    ? {
-        id: null,
-        name: originalCharacter?.name ?? player.name,
-        personalTime: player.personalTime ?? 720,
-        health: player.health,
-        stamina: player.stamina,
-        location: player.position,
-        specialItem: null,
-        vehicle: player.vehicle ?? null,
-        injuries: player.injuries,
-      }
-    : allies.find(a => a.id === allyId)
+  const isActive = allyId === activeAllyId
+  // The active character's record is folded together with the live copy
+  const char = withActive(allies, activeAllyId, player).find(a => a.id === allyId)
 
   if (!char) return null
+  const isAvailable = char.status === 'recruited'
 
   const pt          = char.personalTime ?? 720
   const isFrozen    = pt >= reportTime
@@ -73,14 +60,13 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
 
   // Find the settlement this character is at.
   // Active character: use engine proximity (nearSettlement).
-  // Non-active allies: match their fixed location to a settlement.
+  // Others: the settlement within 8 m of where they are (same radius the engine uses).
   let charSettlement = null
+  const pos = charPosition(char)
   if (isActive && nearSettlement) {
     charSettlement = settlements.find(s => s.id === nearSettlement.settlementId) ?? null
-  } else if (!isPlayerChar && char.location) {
-    charSettlement = settlements.find(s =>
-      Math.abs(s.x - char.location.x) < 2 && Math.abs(s.z - char.location.z) < 2
-    ) ?? null
+  } else if (!isActive && pos) {
+    charSettlement = settlements.find(s => Math.hypot(s.x - pos.x, s.z - pos.z) < 8) ?? null
   }
 
   const locationLabel = charSettlement
@@ -116,15 +102,19 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
           case 'ascend':  action = () => { ascendCableCar(); setTravelMode('paramotor'); onSki() }; break
           case 'police': {
             const stationAlly = allies.find(a => a.id === charSettlement.allyId)
-            if (isCaptured && stationAlly?.status === 'captured') {
+            // The station's own officer and any team members held here
+            const prisoners = allies.filter(a => a.status === 'captured' &&
+              (a.id === charSettlement.allyId || a.heldAt === charSettlement.id))
+            if (isCaptured && prisoners.length > 0) {
+              const names = prisoners.map(a => a.name).join(', ')
               customTile = {
                 label: 'POLICE · RESCUE',
-                sub: `Blow up station — free ${stationAlly.name}`,
+                sub: `Blow up station — free ${names}`,
                 icon: '🧨', tileType: 'rescue', buildingType: 'police_station',
                 danger: true, highlight: true,
                 action: () => {
                   sabotageBuilding(charSettlement.id, 'police_station')
-                  flash(`${stationAlly.name} freed — joins resistance`)
+                  flash(`${names} freed — ${prisoners.length > 1 ? 'join' : 'joins'} the resistance`)
                 },
               }
             } else if (!isCaptured && stationAlly?.status === 'free') {
@@ -254,7 +244,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             <div>
               <div style={{ fontSize: 14, letterSpacing: 3, fontWeight: 'bold', marginBottom: 4 }}>{char.name}</div>
               <div style={{ fontSize: 9, color: '#5577aa', letterSpacing: 1 }}>
-                {isActive ? 'ACTIVE  ·  ' : ''}{isPlayerChar ? 'ORIGINAL CHARACTER' : 'RECRUITED ALLY'}
+                {isActive ? 'ACTIVE  ·  ' : ''}{char.status === 'dead' ? 'KILLED' : char.status === 'captured' ? 'CAPTURED' : 'TEAM MEMBER'}
               </div>
               {char.vehicle && (
                 <div style={{ fontSize: 9, color: '#a8d8ea', letterSpacing: 1, marginTop: 4 }}>
@@ -273,6 +263,9 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
         <InfoBlock label="VITALS">
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
             <div style={{ flex: 1 }}>
+              <StatBar label="HEALTH" value={char.health ?? 100} color={
+                (char.health ?? 100) > 60 ? '#27ae60' : (char.health ?? 100) > 30 ? '#e67e22' : '#e74c3c'
+              } />
               <StatBar label="MUSCLE POWER" value={char.stamina ?? 100} color={
                 (char.stamina ?? 100) > 40 ? '#3498db' : '#e67e22'
               } />
@@ -281,14 +274,14 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
           </div>
         </InfoBlock>
 
-        {/* Supplies — only for the active character */}
-        {isActive && (
+        {/* Supplies — each character carries their own */}
+        {isAvailable && (
           <InfoBlock label="SUPPLIES">
-            <SupplyRow icon="🚀" label="MISSILE"  value={player.missiles}        max={1}   color="#a8d8ea" />
-            <SupplyRow icon="🔫" label="AMMO"     value={player.ammo ?? 0}       max={50}  color="#c8d8a0" />
-            <SupplyRow icon="🧨" label="DYNAMITE" value={player.dynamite}        max={5}   color="#e74c3c" />
+            <SupplyRow icon="🚀" label="MISSILE"  value={char.missiles ?? 0}     max={1}   color="#a8d8ea" />
+            <SupplyRow icon="🔫" label="AMMO"     value={char.ammo ?? 0}         max={50}  color="#c8d8a0" />
+            <SupplyRow icon="🧨" label="DYNAMITE" value={char.dynamite ?? 0}     max={5}   color="#e74c3c" />
             {char.vehicle === 'snowcat' && (
-              <SupplyRow icon="⛽" label="FUEL" value={player.fuel} max={100} color="#f39c12" />
+              <SupplyRow icon="⛽" label="FUEL" value={char.fuel ?? 0} max={100} color="#f39c12" />
             )}
           </InfoBlock>
         )}
@@ -356,7 +349,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
               />
             )}
           </>
-        ) : (
+        ) : isAvailable ? (
           <ActionBtn
             label="DEPLOY THIS CHARACTER"
             sub={isFrozen ? 'FROZEN — cannot act until sync' : 'Switch & continue mission'}
@@ -364,7 +357,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             disabled={isFrozen}
             onClick={() => onSwitch(allyId)}
           />
-        )}
+        ) : null}
 
         {/* MAP */}
         <ActionBtn

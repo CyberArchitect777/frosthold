@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState } from 'react'
-import { useGameStore } from '../store/gameStore.js'
+import { useGameStore, charPosition } from '../store/gameStore.js'
 import { sampleHeight } from '../game/terrain.js'
 const ISLAND_HALF = 2500
 
@@ -221,8 +221,10 @@ export function StrategyMap({ onBack }) {
       }
       for (const a of (allies ?? [])) {
         if (a.id === activeAllyId) continue   // active character shown as player marker
-        if (!a.location) continue
-        const { cx: ax, cy: ay } = worldToCanvas(a.location.x, a.location.z, canvas)
+        if (a.status === 'dead') continue
+        const apos = charPosition(a)          // team members where they are; others at home
+        if (!apos) continue
+        const { cx: ax, cy: ay } = worldToCanvas(apos.x, apos.z, canvas)
         ctx.beginPath()
         ctx.arc(ax, ay, 6, 0, Math.PI * 2)
         ctx.fillStyle = ALLY_COLOURS[a.status] ?? 'rgba(39,174,96,0.85)'
@@ -237,7 +239,8 @@ export function StrategyMap({ onBack }) {
         ctx.fillText(a.name.charAt(0).toUpperCase(), ax, ay)
       }
 
-      // Draw player position (active character)
+      // Draw player position (active character, if one is deployed)
+      if (activeAllyId) {
       const { cx: plx, cy: ply } = worldToCanvas(player.position.x, player.position.z, canvas)
       ctx.beginPath()
       ctx.arc(plx, ply, 8, 0, Math.PI * 2)
@@ -254,6 +257,7 @@ export function StrategyMap({ onBack }) {
       ctx.strokeStyle = '#f39c12'
       ctx.lineWidth = 2
       ctx.stroke()
+      }
 
       // North indicator (always in screen corner)
       ctx.fillStyle = '#e74c3c'
@@ -600,7 +604,7 @@ export function StrategyMap({ onBack }) {
               {selectedSettlement.buildings.map(b => b.replace(/_/g, ' ')).join('  ·  ')}
             </div>
             {(() => {
-              const here = allies.filter(a => a.location && Math.hypot(a.location.x - selectedSettlement.x, a.location.z - selectedSettlement.z) < 55 && a.status !== 'dead')
+              const here = allies.filter(a => a.id !== activeAllyId && charPosition(a) && Math.hypot(charPosition(a).x - selectedSettlement.x, charPosition(a).z - selectedSettlement.z) < 55 && a.status !== 'dead')
               return here.length > 0 ? (
                 <div>
                   <span style={{ color: '#888' }}>People: </span>

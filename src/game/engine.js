@@ -492,6 +492,28 @@ export class GameEngine {
     }
   }
 
+  // Put the player at a character's saved spot (switching character, G4).
+  placePlayer({ x, z, rotationY = 0, travelMode = 'ski' }) {
+    if (this._combatActive) this._endCombat('retreat')
+    const p = this.player
+    p.position.set(x, sampleHeight(x, z) + 2, z)
+    p.velocity.set(0, 0, 0)
+    p.rotation.set(0, rotationY, 0)
+    p.travelMode = travelMode
+    p._skiingActive = false
+    p._braking = false
+    p._landingDamage = 0
+    this._travelMode = travelMode
+    this._collisionCooldown = 1.5
+    this.camera.position.copy(p.position)
+    this._rebuildTerrain(x, z)
+  }
+
+  // End real-time combat (used when the active character goes down).
+  endCombat() {
+    if (this._combatActive) this._endCombat('retreat')
+  }
+
   setAbandonedVehicles(vehicles) {
     this._vehicleData = vehicles ?? []
   }
