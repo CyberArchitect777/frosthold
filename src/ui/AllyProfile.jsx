@@ -26,6 +26,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const player            = useGameStore(s => s.player)
   const reportTime        = useGameStore(s => s.reportTime)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
+  const inCombat          = useGameStore(s => s.inCombat)
   const settlements       = useGameStore(s => s.settlements)
   const sabotagedBuildings  = useGameStore(s => s.sabotagedBuildings)
   const capturedSettlements = useGameStore(s => s.capturedSettlements)
@@ -352,12 +353,14 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             )}
           </>
         ) : isAvailable ? (
+          // Only reached when a switch was refused (in combat); the Team screen switches otherwise
           <ActionBtn
-            label="DEPLOY THIS CHARACTER"
-            sub={isFrozen ? 'FROZEN — cannot act until sync' : 'Switch & continue mission'}
+            label="SWITCH TO THIS CHARACTER"
+            sub={isFrozen ? 'FROZEN — cannot act until sync'
+              : inCombat ? 'IN COMBAT — finish the fight first' : 'Make this the active character'}
             icon="⛷"
-            disabled={isFrozen}
-            onClick={() => { const why = onSwitch(allyId); if (why) flash(why) }}
+            disabled={isFrozen || inCombat}
+            onClick={() => onSwitch(allyId)}
           />
         ) : null}
 

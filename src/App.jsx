@@ -310,20 +310,22 @@ export default function App() {
     return !!activeAllyId && (player.personalTime ?? 720) < reportTime
   }
 
-  // Deploy another character. Returns why it was refused, or nothing.
-  function handleSwitch(id) {
-    if (!switchCharacter(id)) {
-      const s = useGameStore.getState()
-      if (s.inCombat) return 'In combat — go back and finish the fight first'
-      return 'Cannot deploy this character now'
+  // Picking a character on the Team screen switches to them and opens their profile.
+  // If the switch is refused (in combat) the profile opens view-only.
+  function handleSelectCharacter(id) {
+    const before = useGameStore.getState().activeAllyId
+    if (id !== before && switchCharacter(id)) {
+      const { player: p, settlements } = useGameStore.getState()
+      engineRef.current?.placePlayer({
+        x: p.position.x, z: p.position.z,
+        rotationY: p.rotation?.y ?? 0, travelMode: p.travelMode,
+      })
+      // The engine only reports the settlement while the 3D view runs; work it out here
+      // (same 8 m radius) so the profile shows the new character's buildings.
+      const here = settlements.find(s => Math.hypot(s.x - p.position.x, s.z - p.position.z) < 8)
+      setNearSettlement(here ? { settlementId: here.id, allyId: here.allyId, x: here.x, z: here.z } : null)
     }
-    const p = useGameStore.getState().player
-    engineRef.current?.placePlayer({
-      x: p.position.x, z: p.position.z,
-      rotationY: p.rotation?.y ?? 0, travelMode: p.travelMode,
-    })
-    setUiMode('action')
-    setProfileAllyId(undefined)
+    setProfileAllyId(id)
   }
 
   function handleSnipe({ buildingType, x, z }) {
@@ -476,7 +478,7 @@ export default function App() {
       {uiMode === 'hub' && profileAllyId === undefined && (
         <StrategyHub
           onSync={() => synchroniseWatches()}
-          onProfile={(id) => setProfileAllyId(id)}
+          onProfile={handleSelectCharacter}
           onMap={() => setUiMode('strategy')}
           onSave={handleSaveGame}
           nearSettlement={nearSettlement}
@@ -494,7 +496,7 @@ export default function App() {
           onBack={() => setProfileAllyId(undefined)}
           onMap={() => setUiMode('strategy')}
           onSki={() => { setUiMode('action'); setProfileAllyId(undefined) }}
-          onSwitch={handleSwitch}
+          onSwitch={handleSelectCharacter}
           onSnipe={handleSnipe}
         />
       )}
