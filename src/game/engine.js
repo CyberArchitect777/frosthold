@@ -315,7 +315,35 @@ export class GameEngine {
   }
 
   setGyroInput(gamma, beta) { this.player.setGyroInput(gamma, beta) }
-  setTravelMode(mode) { this._travelMode = mode; this.player.setTravelMode(mode) }
+  setTravelMode(mode) {
+    this._travelMode = mode
+    if (mode === 'paramotor') this._moveToLaunchSpot()
+    this.player.setTravelMode(mode)
+  }
+
+  // A paramotor takes off a little way out from the settlement, facing away from it,
+  // so the launch doesn't fly straight into its buildings.
+  _moveToLaunchSpot() {
+    const LAUNCH_NEAR = 30  // m — only when launching from within this distance of a settlement
+    const LAUNCH_DIST = 20  // m — take-off point from the settlement centre
+    const p = this.player
+    let near = null, nearD = Infinity
+    for (const s of this._settlementData ?? []) {
+      const d = Math.hypot(p.position.x - s.x, p.position.z - s.z)
+      if (d < nearD) { near = s; nearD = d }
+    }
+    if (!near || nearD > LAUNCH_NEAR) return
+    // Outward direction: away from the centre, or the current heading if standing on it
+    let dx = p.position.x - near.x, dz = p.position.z - near.z
+    if (nearD < 1) { dx = -Math.sin(p.rotation.y); dz = -Math.cos(p.rotation.y) }
+    const len = Math.hypot(dx, dz)
+    dx /= len; dz /= len
+    const x = near.x + dx * LAUNCH_DIST, z = near.z + dz * LAUNCH_DIST
+    p.position.set(x, Math.max(0, sampleHeight(x, z)) + 2, z)
+    p.rotation.set(0, Math.atan2(-dx, -dz), 0)  // forward is (-sin y, -cos y)
+    this._collisionCooldown = 1.5
+    this.camera.position.copy(p.position)
+  }
   setInjuries(injuries) { this._injuries = injuries; this.player.setInjuries(injuries) }
   setTouchForward(active)  { this.player.setTouchForward(active) }
   setTouchBrake(active)    { this.player.setTouchBrake(active) }

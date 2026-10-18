@@ -31,6 +31,17 @@ export function charPosition(a) {
   return a.position ?? a.location
 }
 
+// The injured body part first aid would treat: an 'out' part first, then a 'hurt' one.
+// Each injury can be treated once; null if there's nothing left to treat.
+export function firstAidTarget(char) {
+  const inj = char.injuries ?? {}
+  const done = char.treatedInjuries ?? {}
+  const open = k => !done[k]
+  return Object.keys(inj).find(k => inj[k] === 'out' && open(k))
+      ?? Object.keys(inj).find(k => inj[k] === 'hurt' && open(k))
+      ?? null
+}
+
 function nearest(items, pos) {
   let best = null, bestD = Infinity
   for (const it of items) {
@@ -350,19 +361,21 @@ export const useGameStore = create(
       const inj = { ...s.player.injuries }
       if (inj[partId] === 'fine') inj[partId] = 'hurt'
       else if (inj[partId] === 'hurt') inj[partId] = 'out'
-      return { player: { ...s.player, injuries: inj } }
+      // A worse injury is a new one, so first aid can treat it again
+      const treated = { ...(s.player.treatedInjuries ?? {}), [partId]: false }
+      return { player: { ...s.player, injuries: inj, treatedInjuries: treated } }
     })
   },
 
+  // Improve one injury by a step; each injury can only be treated once
   applyFirstAid() {
     set(s => {
-      const inj = { ...s.player.injuries }
-      const outPart  = Object.keys(inj).find(k => inj[k] === 'out')
-      const hurtPart = Object.keys(inj).find(k => inj[k] === 'hurt')
-      const target = outPart ?? hurtPart
+      const target = firstAidTarget(s.player)
       if (!target) return {}
-      inj[target] = outPart ? 'hurt' : 'fine'
-      return { player: { ...s.player, injuries: inj } }
+      const inj = { ...s.player.injuries }
+      inj[target] = inj[target] === 'out' ? 'hurt' : 'fine'
+      const treated = { ...(s.player.treatedInjuries ?? {}), [target]: true }
+      return { player: { ...s.player, injuries: inj, treatedInjuries: treated } }
     })
   },
 
@@ -444,15 +457,18 @@ export const useGameStore = create(
     })
   },
 
+  // Returns false if the team's paramotor is already taken
   ascendCableCar() {
-    set(s => {
-      const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
-        .some(a => a.vehicle === 'paramotor' && a.status !== 'dead')
-      if (alreadyTaken) return {}
-      return {
-        player: { ...s.player, travelMode: 'paramotor', vehicle: 'paramotor' },
-      }
-    })
+    const s = get()
+    const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
+      .some(a => a.vehicle === 'paramotor' && a.status !== 'dead')
+    if (alreadyTaken) return false
+    // A snowcat is left behind at the hangar rather than lost
+    if (s.player.vehicle === 'snowcat') s.abandonVehicle()
+    set(s => ({
+      player: { ...s.player, travelMode: 'paramotor', vehicle: 'paramotor' },
+    }))
+    return true
   },
 
   sabotageBuilding(settlementId, buildingType) {
@@ -515,7 +531,8 @@ export const useGameStore = create(
   switchCharacter(allyId) {
     const s = get()
     if (s.inCombat) return false
-    if (s.player.travelMode === 'paramotor' && s.activeAllyId) return false  // land first
+    // Land first. Only in the 3D view: on the Team screen a paramotor is just being carried.
+    if (s.uiMode === 'action' && s.player.travelMode === 'paramotor' && s.activeAllyId) return false
     const target = s.allies.find(a => a.id === allyId)
     if (!target || target.status !== 'recruited' || !s.recruitedAllies.includes(allyId)) return false
     if (allyId === s.activeAllyId) return true
@@ -531,7 +548,8 @@ export const useGameStore = create(
   abandonVehicle() {
     set(s => {
       const type = s.player.vehicle
-      if (!type) return {}
+      // No vehicle to leave, but never stay in a vehicle mode without one
+      if (!type) return s.player.travelMode === 'ski' ? {} : { player: { ...s.player, travelMode: 'ski' } }
       const abandoned = { id: `v_${Date.now()}`, type, x: s.player.position.x, z: s.player.position.z }
       return {
         abandonedVehicles: [...s.abandonedVehicles, abandoned],

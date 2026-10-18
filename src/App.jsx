@@ -310,8 +310,13 @@ export default function App() {
     return !!activeAllyId && (player.personalTime ?? 720) < reportTime
   }
 
+  // Deploy another character. Returns why it was refused, or nothing.
   function handleSwitch(id) {
-    if (!switchCharacter(id)) return
+    if (!switchCharacter(id)) {
+      const s = useGameStore.getState()
+      if (s.inCombat) return 'In combat — go back and finish the fight first'
+      return 'Cannot deploy this character now'
+    }
     const p = useGameStore.getState().player
     engineRef.current?.placePlayer({
       x: p.position.x, z: p.position.z,

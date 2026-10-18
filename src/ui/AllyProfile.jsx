@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useGameStore, withActive, charPosition } from '../store/gameStore.js'
+import { useGameStore, withActive, charPosition, firstAidTarget } from '../store/gameStore.js'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -37,7 +37,6 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const acquireSnowcat   = useGameStore(s => s.acquireSnowcat)
   const ascendCableCar   = useGameStore(s => s.ascendCableCar)
   const sabotageBuilding = useGameStore(s => s.sabotageBuilding)
-  const setTravelMode    = useGameStore(s => s.setTravelMode)
   const abandonVehicle   = useGameStore(s => s.abandonVehicle)
   const recruitAlly      = useGameStore(s => s.recruitAlly)
   const applyFirstAid   = useGameStore(s => s.applyFirstAid)
@@ -99,7 +98,10 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             else if (player.travelMode === 'paramotor') { refuelGarage(); flash('Paramotor refuelled') }
             else { acquireSnowcat(); onSki(); }
           }; break
-          case 'ascend':  action = () => { ascendCableCar(); setTravelMode('paramotor'); onSki() }; break
+          case 'ascend':  action = () => {
+            if (ascendCableCar()) onSki()
+            else flash('Paramotor already taken by the team')
+          }; break
           case 'police': {
             const stationAlly = allies.find(a => a.id === charSettlement.allyId)
             // The station's own officer and any team members held here
@@ -172,9 +174,9 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
       }
     }
 
-    // First Aid — available when injured and a rest building or medkit is present
+    // First Aid — available when an injury hasn't been treated yet and a rest building or medkit is present
     if (isActive) {
-      const hasInjury = char.injuries && Object.values(char.injuries).some(v => v !== 'fine')
+      const hasInjury = !!firstAidTarget(char)
       const hasMedkit = char.specialItem === 'medkit'
       const hasRestBuilding = charSettlement.buildings.some(b =>
         ['house', 'church', 'police_station', 'bunker'].includes(b)
@@ -355,7 +357,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             sub={isFrozen ? 'FROZEN — cannot act until sync' : 'Switch & continue mission'}
             icon="⛷"
             disabled={isFrozen}
-            onClick={() => onSwitch(allyId)}
+            onClick={() => { const why = onSwitch(allyId); if (why) flash(why) }}
           />
         ) : null}
 
