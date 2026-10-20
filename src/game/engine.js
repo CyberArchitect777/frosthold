@@ -944,15 +944,17 @@ export class GameEngine {
     this.scene.add(body, turret)
     this._combatEnemyMeshes.set(vehicle.id, { body, turret, bodyGeo, turretGeo, mat })
 
+    const heading = Math.random() * Math.PI * 2
     this._combatEnemies.push({
       id: vehicle.id,
       x: vehicle.x, z: vehicle.z,
       vx: (Math.random() - 0.5) * 4,
       vz: (Math.random() - 0.5) * 4,
-      fireTimer: 2.0 + Math.random() * 2.0, // stagger initial shots
+      fireTimer: 4.0 + Math.random() * 1.0, // hold fire at first so the player can turn to face them
       hits: 0,
       zigPhase: Math.random() * Math.PI * 2,
-      heading: Math.random() * Math.PI * 2,
+      heading,
+      turretYaw: heading,                   // turret starts facing the way the body faces
     })
 
     const worldEntry = this._worldEnemyMeshes.get(vehicle.id)
@@ -1024,6 +1026,8 @@ export class GameEngine {
     const ZIG_FREQ  = 1.2   // radians/s
     const ZIG_AMP   = 6.0   // lateral force magnitude
     const MAX_SPEED = 9
+    const TURRET_TURN = Math.PI / 4          // radians/s (45°/s)
+    const TURRET_AIM  = 10 * Math.PI / 180   // fires only when within 10° of the player
 
     for (const enemy of this._combatEnemies) {
       const toPX = pp.x - enemy.x, toPZ = pp.z - enemy.z
@@ -1085,12 +1089,20 @@ export class GameEngine {
       if (meshes) {
         meshes.body.position.set(enemy.x, eh + 0.55, enemy.z)
         meshes.body.rotation.y = enemy.heading
-        meshes.turret.position.set(enemy.x, eh + 1.15, enemy.z)
-        meshes.turret.lookAt(pp.x, eh + 1.15, pp.z)
       }
 
-      enemy.fireTimer -= dt
-      if (enemy.fireTimer <= 0) {
+      // Turret turns towards the player at a limited rate
+      let aimDiff = Math.atan2(toPX, toPZ) - enemy.turretYaw
+      aimDiff = Math.atan2(Math.sin(aimDiff), Math.cos(aimDiff))
+      enemy.turretYaw += Math.sign(aimDiff) * Math.min(Math.abs(aimDiff), TURRET_TURN * dt)
+      if (meshes) {
+        meshes.turret.position.set(enemy.x, eh + 1.15, enemy.z)
+        meshes.turret.rotation.y = enemy.turretYaw
+      }
+
+      // Reloaded shots wait until the turret is on target
+      enemy.fireTimer = Math.max(0, enemy.fireTimer - dt)
+      if (enemy.fireTimer === 0 && Math.abs(aimDiff) <= TURRET_AIM) {
         enemy.fireTimer = 3.0 + Math.random() * 2.0
         this._fireEnemyMissileFrom(enemy)
       }
