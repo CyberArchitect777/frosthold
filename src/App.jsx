@@ -41,7 +41,6 @@ export default function App() {
   const takeDamage            = useGameStore(s => s.takeDamage)
   const inflictInjury         = useGameStore(s => s.inflictInjury)
   const abandonVehicle        = useGameStore(s => s.abandonVehicle)
-  const collectVehicle        = useGameStore(s => s.collectVehicle)
   const abandonedVehicles     = useGameStore(s => s.abandonedVehicles)
   const enemyVehicles         = useGameStore(s => s.enemyVehicles)
   const inCombat              = useGameStore(s => s.inCombat)
@@ -93,6 +92,10 @@ export default function App() {
   // instead so no further actions can be taken until the team syncs.
   const prevUiMode = useRef(null)
   useEffect(() => {
+    // Going into the 3D view at a settlement: start a little way out, facing away (not when sniping)
+    if (prevUiMode.current && prevUiMode.current !== 'action' && uiMode === 'action' && !snipeState) {
+      engineRef.current?.leaveSettlement()
+    }
     if (prevUiMode.current === 'action' && uiMode === 'hub') {
       if (nearSettlement) chargeEntryTime()
       const { activeAllyId, player, reportTime } = useGameStore.getState()
@@ -483,8 +486,6 @@ export default function App() {
           onSave={handleSaveGame}
           nearSettlement={nearSettlement}
           allies={allies}
-          abandonedVehicles={abandonedVehicles}
-          onCollectVehicle={(id) => collectVehicle(id)}
         />
       )}
 
@@ -658,7 +659,7 @@ function fmtTime(mins) {
 }
 
 // ---- Strategy Hub — team overview screen ----
-function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies, abandonedVehicles, onCollectVehicle }) {
+function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies }) {
   const player            = useGameStore(s => s.player)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
   const recruitedAllies   = useGameStore(s => s.recruitedAllies)
@@ -677,10 +678,6 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies,
   const anyFrozen   = available.some(c => (c.personalTime ?? 720) >= reportTime)
   const anyApproach = available.some(c => { const m = reportTime - (c.personalTime ?? 720); return m <= 15 && m > 0 })
   const syncUrgent  = anyFrozen || anyApproach
-
-  const nearbyVehicle = activeAllyId && (abandonedVehicles ?? []).find(v =>
-    Math.hypot(v.x - player.position.x, v.z - player.position.z) < 10
-  )
 
   const DOWN_TEXT = {
     killed:   'was killed.',
@@ -746,28 +743,6 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies,
           fontVariantNumeric: 'tabular-nums',
         }}>{fmtTime(reportTime)}</span>
       </button>
-
-      {nearbyVehicle && !player.vehicle && (
-        <button
-          onClick={() => onCollectVehicle(nearbyVehicle.id)}
-          style={{
-            width: 'min(380px, 94vw)', padding: '10px 16px', marginBottom: 12,
-            background: 'rgba(14,40,14,0.9)',
-            border: '1px solid rgba(100,220,100,0.5)',
-            borderRadius: 6, cursor: 'pointer', fontFamily: 'Courier New, monospace',
-            display: 'flex', alignItems: 'center', gap: 12,
-            color: '#80ee80',
-          }}
-        >
-          <span style={{ fontSize: 20 }}>{nearbyVehicle.type === 'snowcat' ? '🚙' : '🪂'}</span>
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
-            <span style={{ fontSize: 12, letterSpacing: 3, fontWeight: 'bold' }}>
-              COLLECT {nearbyVehicle.type === 'snowcat' ? 'SNOWCAT' : 'PARAMOTOR'}
-            </span>
-            <span style={{ fontSize: 9, color: '#446688', letterSpacing: 1 }}>Abandoned vehicle nearby</span>
-          </div>
-        </button>
-      )}
 
       {/* MAP button */}
       <button
@@ -925,9 +900,9 @@ function MobileSpeedControls({ engineRef, inCombat, activeWeapon, travelMode }) 
     <>
       {isParamotor ? (
         // ---- Paramotor layout ----
-        // Left side: ▲ climb / ▼ descend
+        // Left side: ▲ climb / ▼ descend (holds altitude otherwise)
         // Right side: ◀ turn left / ▶ turn right
-        // Centre: ▶▶ speed boost (motor always running)
+        // Always flies at top speed
         <>
           <div style={{ ...btnBase, left: 20, bottom: 160 }}
             {...makeHandlers((v) => engineRef.current?.setTouchForward(v))}>▲</div>
@@ -938,18 +913,6 @@ function MobileSpeedControls({ engineRef, inCombat, activeWeapon, travelMode }) 
             {...makeHandlers((v) => engineRef.current?.setTouchLeft(v))}>◀</div>
           <div style={{ ...btnBase, right: 20, bottom: 88 }}
             {...makeHandlers((v) => engineRef.current?.setTouchRight(v))}>▶</div>
-
-          {/* Boost — centre */}
-          <div style={{
-            ...btnBase,
-            bottom: 120, left: '50%', marginLeft: -36,
-            width: 72, height: 72,
-            border: '2px solid rgba(168,216,234,0.7)',
-            background: 'rgba(10,40,70,0.85)',
-            fontSize: 20,
-          }}
-            {...makeHandlers((v) => engineRef.current?.setTouchThrottle(v))}
-          >▶▶</div>
         </>
       ) : (
         // ---- Ski / snowcat layout ----

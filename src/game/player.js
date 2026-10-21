@@ -12,8 +12,12 @@ const SNOWCAT_MAX_SPEED  = 19.44  // 70 km/h
 const SNOWCAT_GRAVITY    = 7.0
 const SNOWCAT_FRICTION   = 0.018
 const SNOWCAT_TURN_SPEED = 1.4
-const PARAMOTOR_MAX_SPEED  = 13.89  // 50 km/h
-const PARAMOTOR_THRUST     = 8.0    // m/s² motor acceleration
+const PARAMOTOR_MAX_SPEED  = 13.89  // 50 km/h — always flown at this speed
+const PARAMOTOR_THRUST     = 8.0    // m/s² — how fast it gets up to speed
+const PARAMOTOR_CLIMB      = 3.0    // m/s up while climbing (and during take-off)
+const PARAMOTOR_SINK       = 3.0    // m/s down while descending
+const PARAMOTOR_FLARE      = 1.2    // m/s — most sink rate in the last few metres, for a soft landing
+const PARAMOTOR_TAKEOFF    = 2.0    // s of automatic climb after take-off
 const COLLISION_RADIUS    = 0.5
 const STAMINA_DRAIN_SKI = 1.2
 const STAMINA_RECOVER   = 4
@@ -44,7 +48,6 @@ export class PlayerController {
     this.touchBrake    = false
     this.touchLeft     = false
     this.touchRight    = false
-    this.touchThrottle = false  // paramotor thrust (centre button)
 
     // Injury state (set by engine from store)
     this._injuries = null
@@ -57,6 +60,7 @@ export class PlayerController {
     this._skiingActive = false
     this._braking = false
     this._landingDamage = 0
+    this._takeoffTime = 0  // paramotor: seconds of take-off climb left
 
     this._bindInputs()
   }
@@ -87,7 +91,6 @@ export class PlayerController {
   setTouchForward(active)  { this.touchForward  = active }
   setTouchBrake(active)    { this.touchBrake    = active }
   setTouchLeft(active)     { this.touchLeft     = active }
-  setTouchThrottle(active) { this.touchThrottle = active }
   setTouchRight(active)   { this.touchRight = active }
 
   setTravelMode(mode) {
@@ -98,6 +101,7 @@ export class PlayerController {
       const fwdZ = -Math.cos(this.rotation.y)
       this.velocity.set(fwdX * 4, 2.0, fwdZ * 4)
       this.rotation.x = -0.2  // slight nose-up on launch
+      this._takeoffTime = PARAMOTOR_TAKEOFF
     } else {
       this.velocity.set(0, 0, 0)
     }
@@ -323,38 +327,26 @@ export class PlayerController {
     if (this.keys['ArrowLeft']  || this.keys['KeyA'] || this.touchLeft)  this.rotation.y += 0.8 * dt
     if (this.keys['ArrowRight'] || this.keys['KeyD'] || this.touchRight) this.rotation.y -= 0.8 * dt
 
-    // Controls:
-    //   Motor    — always running; W key / centre touch button → speed boost
-    //   Climb    — ArrowUp / ▲ touch button        → gain altitude
-    //   Descend  — ArrowDown or S / ▼ touch button → lose altitude
-    const boost      = this.keys['KeyW']      || this.touchThrottle
-    const climbing   = this.keys['ArrowUp']   || this.touchForward
+    // Controls (always flies at top speed, holds altitude unless told otherwise):
+    //   Climb    — ArrowUp or W / ▲ touch button
+    //   Descend  — ArrowDown or S / ▼ touch button
+    this._takeoffTime = Math.max(0, this._takeoffTime - dt)
+    const climbing   = this.keys['ArrowUp']   || this.keys['KeyW'] || this.touchForward || this._takeoffTime > 0
     const descending = this.keys['ArrowDown'] || this.keys['KeyS'] || this.touchBrake
 
     const fwdH = new THREE.Vector3(-Math.sin(this.rotation.y), 0, -Math.cos(this.rotation.y))
 
-    // Gravity
-    this.velocity.y -= 4.5 * dt
+    // Horizontal: build up to top speed in the facing direction
+    const toward = (v, target, step) => v + Math.max(-step, Math.min(step, target - v))
+    const step = PARAMOTOR_THRUST * dt
+    this.velocity.x = toward(this.velocity.x, fwdH.x * PARAMOTOR_MAX_SPEED, step)
+    this.velocity.z = toward(this.velocity.z, fwdH.z * PARAMOTOR_MAX_SPEED, step)
 
-    // Motor always provides forward thrust; boost button adds extra power
-    const thrustMult = boost ? 1.5 : 1.0
-    this.velocity.x += fwdH.x * PARAMOTOR_THRUST * thrustMult * dt
-    this.velocity.z += fwdH.z * PARAMOTOR_THRUST * thrustMult * dt
-
-    // Direct vertical control
-    if (climbing)   this.velocity.y += 7.0 * dt
-    if (descending) this.velocity.y -= 4.5 * dt
-
-    // Passive lift from horizontal speed — gliding keeps you aloft while moving
-    const horizSpeed = Math.sqrt(this.velocity.x ** 2 + this.velocity.z ** 2)
-    this.velocity.y += horizSpeed * 0.32 * dt
-
-    // Air drag
-    this.velocity.multiplyScalar(Math.pow(0.96, dt * 60))
-
-    // Speed cap 50 km/h
-    const speed = this.velocity.length()
-    if (speed > PARAMOTOR_MAX_SPEED) this.velocity.multiplyScalar(PARAMOTOR_MAX_SPEED / speed)
+    // Vertical: climb, descend or hold altitude; sink gently in the last few metres
+    const height = this.position.y - Math.max(0, sampleHeight(this.position.x, this.position.z))
+    let targetVY = climbing ? PARAMOTOR_CLIMB : descending ? -PARAMOTOR_SINK : 0
+    if (targetVY < 0 && height < 4) targetVY = -PARAMOTOR_FLARE
+    this.velocity.y = toward(this.velocity.y, targetVY, 6 * dt)
 
     this.position.addScaledVector(this.velocity, dt)
 
@@ -367,7 +359,7 @@ export class PlayerController {
     const rawH = sampleHeight(this.position.x, this.position.z)
     const groundH = Math.max(0, rawH)
     if (this.position.y <= groundH + 0.3) {
-      const climbInput = this.keys['ArrowUp'] || this.touchForward
+      const climbInput = this.keys['ArrowUp'] || this.keys['KeyW'] || this.touchForward || this._takeoffTime > 0
       if (climbInput) {
         // Up pressed — take off instead of landing
         this.position.y = groundH + 0.3

@@ -580,7 +580,6 @@ export function StrategyMap({ onBack }) {
             <div style={{ fontWeight: 'bold', color: '#a8d8ea' }}>{selectedAlly.name}</div>
             <div style={{ color: '#aaa', marginTop: 4, fontSize: 10 }}>
               Status: {selectedAlly.status} | Morale: {selectedAlly.morale}
-              {selectedAlly.specialItem && <span> | Item: {selectedAlly.specialItem.replace('_', ' ')}</span>}
             </div>
           </div>
           {selectedAlly.status === 'free' && (

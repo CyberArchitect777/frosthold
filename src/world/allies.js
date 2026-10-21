@@ -37,12 +37,6 @@ const ALLY_TEMPLATES = [
   { name: 'Jorn Havel'     },
 ]
 
-const SPECIAL_ITEMS = [
-  'thermal_suit', 'signal_jammer', 'medkit', 'explosives', 'fuel_canister',
-  'night_vision', 'snowcat_key', 'radio', 'maps', 'rations',
-  null, null, null, null, null,
-]
-
 import { generateSettlements } from './settlements.js'
 import { findInvasionPoint } from '../game/terrain.js'
 
@@ -121,7 +115,7 @@ export function generateAllies(worldSeed) {
       allyCount++
     }
 
-    const specialItemIdx = Math.floor(rand() * SPECIAL_ITEMS.length)
+    rand() // was the special-item roll (items removed); kept so a seed still makes the same world
     const morale = 40 + Math.floor(rand() * 40)
 
     return {
@@ -134,7 +128,6 @@ export function generateAllies(worldSeed) {
       health: 100,
       stamina: 100,
       personalTime: 720,
-      specialItem: SPECIAL_ITEMS[specialItemIdx],
       vehicle: null,
       injuries: { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' },
     }

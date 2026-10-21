@@ -345,8 +345,9 @@ export const useGameStore = create(
     }
 
     set(s => ({
+      // A recruit starts on the recruiter's personal time
       allies: s.allies.map(a => a.id === allyId ? {
-        ...a, ...STARTING_KIT, status: 'recruited',
+        ...a, ...STARTING_KIT, status: 'recruited', personalTime: s.player.personalTime,
         position: { x: a.location.x, y: 2, z: a.location.z }, rotation: { y: 0 },
         reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
       } : a),
@@ -380,12 +381,21 @@ export const useGameStore = create(
   },
 
   // Building interactions
+  // Resting uses up the rest of the period until sync. Recovery scales with the time rested:
+  // a full period (REST_FULL_MINS) gives the full amount for the building.
+  // Returns false if there's no time left to rest.
   restAtBuilding(rate = 'high') {
+    if (get().reportTime - get().player.personalTime <= 0) return false
     const MULT = { high: 1.0, moderate: 0.6, low: 0.35, minimal: 0.1 }
+    const REST_FULL_MINS   = 120  // a whole sync period
+    const REST_INJURY_MINS = 60   // rest needed to improve an injury
     const m = MULT[rate] ?? 1.0
     set(s => {
+      const mins = s.reportTime - s.player.personalTime
+      if (mins <= 0) return {}
+      const f = Math.min(1, mins / REST_FULL_MINS)
       const inj = { ...s.player.injuries }
-      if (m >= 0.6) {
+      if (m >= 0.6 && mins >= REST_INJURY_MINS) {
         const outPart  = Object.keys(inj).find(k => inj[k] === 'out')
         const hurtPart = Object.keys(inj).find(k => inj[k] === 'hurt')
         const target = outPart ?? hurtPart
@@ -394,12 +404,14 @@ export const useGameStore = create(
       return {
         player: {
           ...s.player,
-          stamina: Math.min(100, s.player.stamina + Math.round(100 * m)),
-          health:  Math.min(100, s.player.health  + Math.round(30  * m)),
+          stamina: Math.min(100, s.player.stamina + Math.round(100 * m * f)),
+          health:  Math.min(100, s.player.health  + Math.round(30  * m * f)),
           injuries: inj,
+          personalTime: s.reportTime,
         }
       }
     })
+    return true
   },
 
   resupplyStore() {
@@ -500,7 +512,9 @@ export const useGameStore = create(
               const fresh = s.recruitedAllies.includes(a.id) ? {} : {
                 ...STARTING_KIT, rotation: { y: 0 }, reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
               }
-              return { ...a, ...fresh, status: 'recruited', heldAt: null, position: here }
+              // Freed characters carry on from the rescuer's personal time (or their own, if later)
+              const personalTime = Math.max(a.personalTime ?? 0, s.player.personalTime)
+              return { ...a, ...fresh, status: 'recruited', heldAt: null, position: here, personalTime }
             }),
             recruitedAllies: [...s.recruitedAllies, ...ids.filter(id => !s.recruitedAllies.includes(id))],
           }

@@ -41,6 +41,8 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const abandonVehicle   = useGameStore(s => s.abandonVehicle)
   const recruitAlly      = useGameStore(s => s.recruitAlly)
   const applyFirstAid   = useGameStore(s => s.applyFirstAid)
+  const collectVehicle   = useGameStore(s => s.collectVehicle)
+  const abandonedVehicles = useGameStore(s => s.abandonedVehicles)
 
   const [feedback, setFeedback] = useState(null)
   function flash(msg) { setFeedback(msg); setTimeout(() => setFeedback(null), 2500) }
@@ -69,6 +71,14 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
     charSettlement = settlements.find(s => Math.hypot(s.x - pos.x, s.z - pos.z) < 8) ?? null
   }
 
+  // An abandoned vehicle where this character is standing (each character has their own position)
+  const nearbyVehicle = isActive && !char.vehicle && pos
+    ? abandonedVehicles.find(v => Math.hypot(v.x - pos.x, v.z - pos.z) < 10)
+    : null
+
+  // Resting uses up the rest of the period; show how long that is
+  const restLabel = isFrozen ? '' : ` (${Math.round(minsLeft)} min)`
+
   const locationLabel = charSettlement
     ? charSettlement.buildings[0]?.replace(/_/g, ' ') ?? 'settlement'
     : 'field'
@@ -91,7 +101,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
       if (isActive) {
         const rate = def.recoveryRate
         switch (def.tileType) {
-          case 'rest':    action = () => { restAtBuilding(rate); flash(`Rested — ${rate} recovery`) }; break
+          case 'rest':    action = () => flash(restAtBuilding(rate) ? `Rested until sync — ${rate} recovery` : 'No time left to rest before sync'); break
           case 'store':   action = () => { resupplyStore(); flash('Resupplied: missile + 20 rounds') }; break
           case 'magazine':action = () => { resupplyMagazine(); flash('Armoury: full resupply') }; break
           case 'garage': action = () => {
@@ -132,12 +142,12 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
                 },
               }
             } else {
-              action = () => { restAtBuilding(rate); flash('Rested at police station') }
+              action = () => flash(restAtBuilding(rate) ? 'Rested at police station until sync' : 'No time left to rest before sync')
             }
             break
           }
           case 'heat_mine': break
-          case 'bunker':  action = () => { restAtBuilding(rate); flash('Bunker — partial rest') }; break
+          case 'bunker':  action = () => flash(restAtBuilding(rate) ? 'Watchtower — partial rest until sync' : 'No time left to rest before sync'); break
           case 'sabotage':
             if (player.dynamite > 0) {
               action = () => { sabotageBuilding(charSettlement.id, bType); flash('Factory destroyed') }
@@ -145,7 +155,12 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             break
         }
       }
-      buildingTiles.push(customTile ?? { ...def, buildingType: bType, action, highlight: def.danger })
+      const tile = customTile ?? { ...def, buildingType: bType, action, highlight: def.danger }
+      // Rest tiles say how much time resting will take
+      if (isActive && !customTile && action && (def.tileType === 'rest' || def.tileType === 'bunker' || def.tileType === 'police')) {
+        tile.sub = `Rest until sync${restLabel}`
+      }
+      buildingTiles.push(tile)
     }
 
     // Recruit non-police ally present at this settlement
@@ -175,17 +190,16 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
       }
     }
 
-    // First Aid — available when an injury hasn't been treated yet and a rest building or medkit is present
+    // First Aid — available when an injury hasn't been treated yet and a rest building is present
     if (isActive) {
       const hasInjury = !!firstAidTarget(char)
-      const hasMedkit = char.specialItem === 'medkit'
       const hasRestBuilding = charSettlement.buildings.some(b =>
         ['house', 'church', 'police_station', 'bunker'].includes(b)
       )
-      if (hasInjury && (hasMedkit || hasRestBuilding)) {
+      if (hasInjury && hasRestBuilding) {
         buildingTiles.push({
           label: 'FIRST AID',
-          sub: hasMedkit ? 'Use medkit — treat one injury' : 'Treat one injury here',
+          sub: 'Treat one injury here',
           icon: '🩹', tileType: 'first_aid',
           danger: false, highlight: false,
           action: () => { applyFirstAid(); flash('First aid applied — one injury improved') },
@@ -284,7 +298,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             <SupplyRow icon="🔫" label="AMMO"     value={char.ammo ?? 0}         max={50}  color="#c8d8a0" />
             <SupplyRow icon="🧨" label="DYNAMITE" value={char.dynamite ?? 0}     max={5}   color="#e74c3c" />
             {char.vehicle === 'snowcat' && (
-              <SupplyRow icon="⛽" label="FUEL" value={char.fuel ?? 0} max={100} color="#f39c12" />
+              <SupplyRow icon="⛽" label="FUEL" value={Math.round(char.fuel ?? 0)} max={100} color="#f39c12" />
             )}
           </InfoBlock>
         )}
@@ -299,14 +313,6 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
           )}
         </InfoBlock>
 
-        {/* Special item */}
-        {char.specialItem && (
-          <InfoBlock label="ITEM" style={{ borderColor: 'rgba(100,200,80,0.3)', background: 'rgba(20,40,10,0.9)' }}>
-            <div style={{ fontSize: 11, color: '#a8e880', letterSpacing: 1 }}>
-              {char.specialItem.replace(/_/g, ' ').toUpperCase()}
-            </div>
-          </InfoBlock>
-        )}
       </div>
 
       {/* Feedback flash */}
@@ -363,6 +369,16 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             onClick={() => onSwitch(allyId)}
           />
         ) : null}
+
+        {nearbyVehicle && (
+          <ActionBtn
+            label={`COLLECT ${nearbyVehicle.type === 'snowcat' ? 'SNOWCAT' : 'PARAMOTOR'}`}
+            sub="Abandoned vehicle here"
+            icon={nearbyVehicle.type === 'snowcat' ? '🚙' : '🪂'}
+            disabled={isFrozen}
+            onClick={() => collectVehicle(nearbyVehicle.id)}
+          />
+        )}
 
         {/* MAP */}
         <ActionBtn

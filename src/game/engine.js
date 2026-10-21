@@ -4,6 +4,21 @@ import { PlayerController } from './player.js'
 import { initTerrain, sampleHeight } from './terrain.js'
 
 const CHUNK_SIZE = 500  // metres per terrain chunk
+
+// Half-width (x) and half-depth (z) of each building's footprint, in metres —
+// used for its foundation and for collisions
+const BUILDING_FOOTPRINT = {
+  church:            [1.6, 2.95],
+  store:             [2.5, 1.75],
+  police_station:    [2.0, 1.8],
+  garage:            [2.9, 2.15],
+  paramotor_hanger:  [3.65, 2.65],
+  heat_mine:         [1.3, 1.3],
+  magazine:          [1.85, 1.35],
+  bunker:            [1.6, 1.6],
+  synthesis_factory: [2.6, 3.15],
+  house:             [1.4, 1.1],
+}
 const CHUNK_SEGS = 256  // segments per chunk — gives ~2 m vertex spacing (~8 vertices per 15 m dune)
 
 // Simple seeded LCG — deterministic tree placement independent of Math.random()
@@ -206,7 +221,8 @@ export class GameEngine {
       }
     }
 
-    this._treePositions = pts.map(p => ({ x: p.wx, z: p.wz }))
+    // top: height of the tree's tip (upper cone centre 2.6 × scale + half its 1.6 m × 0.65 height)
+    this._treePositions = pts.map(p => ({ x: p.wx, z: p.wz, top: p.h + 3.15 * p.sc }))
 
     const n = pts.length
     const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, n)
@@ -317,39 +333,39 @@ export class GameEngine {
   setGyroInput(gamma, beta) { this.player.setGyroInput(gamma, beta) }
   setTravelMode(mode) {
     this._travelMode = mode
-    if (mode === 'paramotor') this._moveToLaunchSpot()
     this.player.setTravelMode(mode)
   }
 
-  // A paramotor takes off a little way out from the settlement, facing away from it,
-  // so the launch doesn't fly straight into its buildings.
-  _moveToLaunchSpot() {
-    const LAUNCH_NEAR = 30  // m — only when launching from within this distance of a settlement
-    const LAUNCH_DIST = 20  // m — take-off point from the settlement centre
+  // Going into the 3D view at a settlement: start a little way out from it, facing away,
+  // so skis, a snowcat or a paramotor don't go straight into its buildings.
+  leaveSettlement() {
+    const START_DIST = 20  // m from the settlement centre
     const p = this.player
     let near = null, nearD = Infinity
     for (const s of this._settlementData ?? []) {
       const d = Math.hypot(p.position.x - s.x, p.position.z - s.z)
       if (d < nearD) { near = s; nearD = d }
     }
-    if (!near || nearD > LAUNCH_NEAR) return
+    if (!near || nearD >= START_DIST) return
     // Outward direction: away from the centre, or the current heading if standing on it
     let dx = p.position.x - near.x, dz = p.position.z - near.z
     if (nearD < 1) { dx = -Math.sin(p.rotation.y); dz = -Math.cos(p.rotation.y) }
     const len = Math.hypot(dx, dz)
     dx /= len; dz /= len
-    const x = near.x + dx * LAUNCH_DIST, z = near.z + dz * LAUNCH_DIST
-    p.position.set(x, Math.max(0, sampleHeight(x, z)) + 2, z)
+    const x = near.x + dx * START_DIST, z = near.z + dz * START_DIST
+    const lift = p.travelMode === 'paramotor' ? 2 : 0.5
+    p.position.set(x, Math.max(0, sampleHeight(x, z)) + lift, z)
     p.rotation.set(0, Math.atan2(-dx, -dz), 0)  // forward is (-sin y, -cos y)
+    p.setTravelMode(p.travelMode)  // start from rest (a paramotor gets its take-off run)
     this._collisionCooldown = 1.5
     this.camera.position.copy(p.position)
+    this._rebuildTerrain(x, z)
   }
   setInjuries(injuries) { this._injuries = injuries; this.player.setInjuries(injuries) }
   setTouchForward(active)  { this.player.setTouchForward(active) }
   setTouchBrake(active)    { this.player.setTouchBrake(active) }
   setTouchLeft(active)     { this.player.setTouchLeft(active) }
   setTouchRight(active)    { this.player.setTouchRight(active) }
-  setTouchThrottle(active) { this.player.setTouchThrottle(active) }
 
   pause()  { this.isPaused = true }
   resume() { this.isPaused = false; this.lastTime = performance.now() }
@@ -454,6 +470,7 @@ export class GameEngine {
       if (this._treePositions) {
         for (const t of this._treePositions) {
           if (Math.abs(t.x - px) > 2.0 || Math.abs(t.z - pz) > 2.0) continue
+          if (playerState.position.y > t.top) continue  // flying over it
           if (Math.hypot(t.x - px, t.z - pz) < 1.0) {
             collisionDamage = Math.max(5, Math.round(spd * 2.5))
             this._collisionCooldown = 1.5
@@ -463,16 +480,37 @@ export class GameEngine {
         }
       }
 
-      if (collisionDamage === 0 && this._buildingPositions) {
-        for (const b of this._buildingPositions) {
-          if (Math.abs(b.x - px) > 2.5 || Math.abs(b.z - pz) > 2.5) continue
-          if (Math.hypot(b.x - px, b.z - pz) < 1.5) {
-            collisionDamage = Math.max(10, Math.round(spd * 5))
-            this._collisionCooldown = 1.5
-            buildingCrash = true
-            this._audio?.playCollision()
-            break
-          }
+    }
+
+    // Buildings are solid across their whole footprint: push the player back out.
+    // Only a fast hit is a crash (damage, back to the Team screen); a slow one just stops you.
+    if (!this._snipeActive && this._buildingPositions) {
+      const R = 0.4          // the player's own half-width
+      const TOP = 8          // m — flying higher than this above a building clears it
+      const CRASH_SPEED = 4  // m/s
+      const p = this.player.position
+      let hit = false
+      for (const b of this._buildingPositions) {
+        const ox = b.hw + R - Math.abs(p.x - b.x)
+        const oz = b.hd + R - Math.abs(p.z - b.z)
+        if (ox <= 0 || oz <= 0 || p.y - b.y > TOP) continue
+        if (ox < oz) p.x += (p.x >= b.x ? 1 : -1) * ox
+        else         p.z += (p.z >= b.z ? 1 : -1) * oz
+        hit = true
+      }
+      if (hit) {
+        this.player.velocity.x = 0
+        this.player.velocity.z = 0
+        this.player._skiingActive = false
+        this.player._braking = false
+        playerState.position.copy(p)
+        this.camera.position.x = p.x
+        this.camera.position.z = p.z
+        if (spd > CRASH_SPEED && this._collisionCooldown === 0 && collisionDamage === 0) {
+          collisionDamage = Math.max(10, Math.round(spd * 5))
+          this._collisionCooldown = 1.5
+          buildingCrash = true
+          this._audio?.playCollision()
         }
       }
     }
@@ -564,6 +602,18 @@ export class GameEngine {
       m.castShadow = true
       m.receiveShadow = true
       meshes.push(m)
+    }
+
+    // Foundation: on a slope, fill from the lowest ground under the footprint up to the
+    // floor so the building sits on the hill with no gap underneath
+    const [hw, hd] = BUILDING_FOOTPRINT[type] ?? BUILDING_FOOTPRINT.house
+    let lowest = groundY
+    for (const [fx, fz] of [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]]) {
+      lowest = Math.min(lowest, sampleHeight(wx + fx * hw, wz + fz * hd))
+    }
+    if (groundY - lowest > 0.05) {
+      const h = groundY - lowest + 0.3  // reaches a little below the ground
+      place(box(hw * 2, h, hd * 2), mat(0x5a5a55), 0, -h / 2 + 0.05, 0)
     }
 
     switch (type) {
@@ -675,7 +725,8 @@ export class GameEngine {
         const bType = s.buildings[b]
         const bMeshes = this._makeBuildingMeshes(bType, s.x + ox, s.z + oz)
         bMeshes.forEach(m => group.add(m))
-        this._buildingPositions.push({ x: s.x + ox, z: s.z + oz })
+        const [hw, hd] = BUILDING_FOOTPRINT[bType] ?? BUILDING_FOOTPRINT.house
+        this._buildingPositions.push({ x: s.x + ox, z: s.z + oz, y: sampleHeight(s.x + ox, s.z + oz), hw, hd })
       }
 
       group.position.set(0, 0, 0)

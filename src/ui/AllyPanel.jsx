@@ -63,15 +63,6 @@ export function AllyPanel() {
         </span>
       </div>
 
-      {ally.specialItem && (
-        <div style={{ marginBottom: 10, padding: '4px 8px', background: 'rgba(168,216,234,0.1)', borderRadius: 4 }}>
-          <span style={{ fontSize: 10, color: '#aaa' }}>CARRIES: </span>
-          <span style={{ color: '#f39c12', textTransform: 'uppercase', fontSize: 11 }}>
-            {ally.specialItem.replace(/_/g, ' ')}
-          </span>
-        </div>
-      )}
-
       <div style={{ marginBottom: 14 }}>
         <div style={{ fontSize: 10, color: '#aaa', marginBottom: 4 }}>MORALE</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>

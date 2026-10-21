@@ -77,7 +77,7 @@ export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
       <div style={{ flex: 1, margin: '0 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <StatBar label="ST" value={player.stamina} color={staminaColor} />
         {(player.travelMode === 'snowcat' || player.travelMode === 'paramotor') && (
-          <StatBar label="FUEL" value={player.fuel} color="#f39c12" format={v => `${Math.max(0, v).toFixed(1)}%`} />
+          <StatBar label="FUEL" value={player.fuel} color="#f39c12" format={v => `${Math.max(0, Math.round(v))}%`} />
         )}
       </div>
 
