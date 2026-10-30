@@ -85,6 +85,44 @@ function spawnEnemy(invasionPoint, i) {
   }
 }
 
+// The engine changes the store several times a frame, so writing the save to localStorage
+// on every change is slow (P1). Writes are batched instead: at most one every SAVE_INTERVAL,
+// plus one straight away when the page is hidden or closed.
+const SAVE_INTERVAL = 2000 // ms
+function batchedStorage() {
+  let pending = null
+  let timer = null
+  const flush = () => {
+    clearTimeout(timer)
+    timer = null
+    if (!pending) return
+    const [name, value] = pending
+    pending = null
+    try { localStorage.setItem(name, JSON.stringify(value)) }
+    catch (e) { console.warn('Frosthold: could not save', e) }
+  }
+  window.addEventListener('pagehide', flush)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush()
+  })
+  return {
+    getItem(name) {
+      const str = localStorage.getItem(name)
+      return str ? JSON.parse(str) : null
+    },
+    setItem(name, value) {
+      pending = [name, value]
+      if (!timer) timer = setTimeout(flush, SAVE_INTERVAL)
+    },
+    removeItem(name) {
+      pending = null
+      clearTimeout(timer)
+      timer = null
+      localStorage.removeItem(name)
+    },
+  }
+}
+
 export const useGameStore = create(
   persist(
     (set, get) => ({
@@ -851,6 +889,7 @@ export const useGameStore = create(
     }),
     {
       name: 'frosthold-save',
+      storage: batchedStorage(),
       // v2: independent characters (G4). v3: sieges and enemy pace (G8).
       // Older saves aren't converted; they're dropped.
       version: 3,

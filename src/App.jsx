@@ -59,6 +59,7 @@ export default function App() {
   const [gyroEnabled, setGyroEnabled] = useState(true)
   const [terrainDebug, setTerrainDebug] = useState(null)
   const [showDebug, setShowDebug] = useState(false)
+  const showDebugRef = useRef(false)  // read by the per-frame engine bridge
   const [enemyBearing, setEnemyBearing] = useState(null)
   const enemyBearingRef = useRef(null)
   // Ally roster / profile navigation (null = roster, allyId string or 'player-char' = profile)
@@ -73,6 +74,7 @@ export default function App() {
 
   // Keep snipeStateRef in sync for keyboard handler (avoids stale closure)
   useEffect(() => { snipeStateRef.current = snipeState }, [snipeState])
+  useEffect(() => { showDebugRef.current = showDebug }, [showDebug])
 
   // Detect performance tier on mount
   useEffect(() => {
@@ -207,7 +209,8 @@ export default function App() {
       }
       advanceTime(dt)
       setNearSettlement(nearSettlement ?? null)
-      setTerrainDebug(debug ?? null)
+      // A new object each frame re-renders all of App, so only while the debug readout is on (P2)
+      if (showDebugRef.current) setTerrainDebug(debug ?? null)
     }
 
     engine.start()

@@ -1,7 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react'
 import { useGameStore, charPosition } from '../store/gameStore.js'
 import { TRAVEL_MODES } from '../game/travel.js'
-import { sampleHeight } from '../game/terrain.js'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -252,48 +251,13 @@ function Minimap({ player, allies, activeAllyId, settlements, invasionPoint, aba
 
     ctx.clearRect(0, 0, w, h)
 
-    // Draw land (green) / water (blue) background at half resolution for performance
+    // Background: land and water are both drawn black, so no height lookups are needed (P3)
     const px = player.position.x, pz = player.position.z
-    const imgData = ctx.createImageData(w, h)
-    const d = imgData.data
-    const step = 2  // sample every 2 px, fill 2×2 blocks
-    for (let py = 0; py < h; py += step) {
-      for (let mapX = 0; mapX < w; mapX += step) {
-        // Skip pixels outside the circular minimap
-        const dx = mapX - w / 2, dy = py - h / 2
-        if (dx * dx + dy * dy > (w / 2) * (w / 2)) continue
-
-        const wx = px + (mapX - w / 2) / (w / 2) * MINIMAP_VIEW_RADIUS
-        const wz = pz + (py  - h / 2) / (h / 2) * MINIMAP_VIEW_RADIUS
-        const hv = sampleHeight(wx, wz)
-
-        let r, g, b
-        if (hv <= 0) {
-          // Water — black
-          r = 0; g = 0; b = 0
-        } else {
-          // Land — black
-          r = 0; g = 0; b = 0
-        }
-
-        for (let oy = 0; oy < step; oy++) {
-          for (let ox = 0; ox < step; ox++) {
-            const i = ((py + oy) * w + (mapX + ox)) * 4
-            d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255
-          }
-        }
-      }
-    }
-    ctx.putImageData(imgData, 0, 0)
-
-    // Re-apply circular clip over the image
     ctx.save()
     ctx.beginPath()
     ctx.arc(w / 2, h / 2, w / 2, 0, Math.PI * 2)
     ctx.clip()
-
-    // Subtle overlay so dots remain readable
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'
+    ctx.fillStyle = '#000'
     ctx.fillRect(0, 0, w, h)
 
     // Player-centred world→minimap coordinate transform

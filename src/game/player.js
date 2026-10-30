@@ -66,21 +66,25 @@ export class PlayerController {
   }
 
   _bindInputs() {
-    window.addEventListener('keydown', e => { this.keys[e.code] = true })
-    window.addEventListener('keyup',   e => { this.keys[e.code] = false })
-
+    // Kept so dispose() can remove them (P5)
+    this._onKeyDown = e => { this.keys[e.code] = true }
+    this._onKeyUp   = e => { this.keys[e.code] = false }
     // Pointer lock for desktop mouse look
-    document.addEventListener('pointerlockchange', () => {
+    this._onPointerLockChange = () => {
       this.isPointerLocked = document.pointerLockElement !== null
-    })
-    document.addEventListener('mousemove', e => {
+    }
+    this._onMouseMove = e => {
       this.mouseX        = e.clientX
       this._mouseMovedAt = performance.now()
       if (this.isPointerLocked) {
         this.mouseDeltaX += e.movementX
         this.mouseDeltaY += e.movementY
       }
-    })
+    }
+    window.addEventListener('keydown', this._onKeyDown)
+    window.addEventListener('keyup',   this._onKeyUp)
+    document.addEventListener('pointerlockchange', this._onPointerLockChange)
+    document.addEventListener('mousemove', this._onMouseMove)
   }
 
   setGyroInput(gamma, beta) {
@@ -457,7 +461,9 @@ export class PlayerController {
   }
 
   dispose() {
-    window.removeEventListener('keydown', () => {})
-    window.removeEventListener('keyup', () => {})
+    window.removeEventListener('keydown', this._onKeyDown)
+    window.removeEventListener('keyup',   this._onKeyUp)
+    document.removeEventListener('pointerlockchange', this._onPointerLockChange)
+    document.removeEventListener('mousemove', this._onMouseMove)
   }
 }

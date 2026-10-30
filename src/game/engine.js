@@ -4,6 +4,7 @@ import { PlayerController } from './player.js'
 import { initTerrain, sampleHeight } from './terrain.js'
 
 const CHUNK_SIZE = 500  // metres per terrain chunk
+const TREE_CELL  = 4    // metres per grid square for tree collision lookups
 
 // Half-width (x) and half-depth (z) of each building's footprint, in metres —
 // used for its foundation and for collisions
@@ -223,6 +224,13 @@ export class GameEngine {
 
     // top: height of the tree's tip (upper cone centre 2.6 × scale + half its 1.6 m × 0.65 height)
     this._treePositions = pts.map(p => ({ x: p.wx, z: p.wz, top: p.h + 3.15 * p.sc }))
+    // Trees bucketed by TREE_CELL-sized grid squares, so collision checks only nearby ones (P9)
+    this._treeGrid = new Map()
+    for (const t of this._treePositions) {
+      const key = `${Math.floor(t.x / TREE_CELL)},${Math.floor(t.z / TREE_CELL)}`
+      if (!this._treeGrid.has(key)) this._treeGrid.set(key, [])
+      this._treeGrid.get(key).push(t)
+    }
 
     const n = pts.length
     const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, n)
@@ -395,7 +403,12 @@ export class GameEngine {
 
     if (!this.isPaused) this._update(dt)
 
-    this.renderer.render(this.scene, this.camera)
+    // While paused (pause menu, or the canvas hidden behind another screen) nothing moves,
+    // so redraw only twice a second, enough to catch a window resize (P8)
+    if (!this.isPaused || now - (this._pausedRenderAt ?? 0) > 500) {
+      this._pausedRenderAt = now
+      this.renderer.render(this.scene, this.camera)
+    }
     requestAnimationFrame(() => this._loop())
   }
 
@@ -467,15 +480,21 @@ export class GameEngine {
     if (this._collisionCooldown === 0 && spd > 0.5) {
       const px = playerState.position.x, pz = playerState.position.z
 
-      if (this._treePositions) {
-        for (const t of this._treePositions) {
-          if (Math.abs(t.x - px) > 2.0 || Math.abs(t.z - pz) > 2.0) continue
-          if (playerState.position.y > t.top) continue  // flying over it
-          if (Math.hypot(t.x - px, t.z - pz) < 1.0) {
-            collisionDamage = Math.max(5, Math.round(spd * 2.5))
-            this._collisionCooldown = 1.5
-            this._audio?.playCollision()
-            break
+      if (this._treeGrid) {
+        // The 1 m hit radius is smaller than a cell, so the player's cell and its neighbours cover it
+        const cx = Math.floor(px / TREE_CELL), cz = Math.floor(pz / TREE_CELL)
+        search:
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          for (let gz = cz - 1; gz <= cz + 1; gz++) {
+            for (const t of this._treeGrid.get(`${gx},${gz}`) ?? []) {
+              if (playerState.position.y > t.top) continue  // flying over it
+              if (Math.hypot(t.x - px, t.z - pz) < 1.0) {
+                collisionDamage = Math.max(5, Math.round(spd * 2.5))
+                this._collisionCooldown = 1.5
+                this._audio?.playCollision()
+                break search
+              }
+            }
           }
         }
       }
