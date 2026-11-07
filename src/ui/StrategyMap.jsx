@@ -575,7 +575,7 @@ export function StrategyMap({ onBack }) {
               {player.name} <span style={{ color: '#aaa', fontWeight: 'normal' }}>[YOU]</span>
             </div>
             <div style={{ color: '#aaa', marginTop: 4, fontSize: 10 }}>
-              Stamina: {Math.round(player.stamina)}
+              Health: {Math.round(player.health ?? 100)}
             </div>
             {player.relationships?.length > 0 && (
               <div style={{ marginTop: 6, fontSize: 10 }}>

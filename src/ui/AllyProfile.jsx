@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useGameStore, withActive, charPosition, firstAidTarget, vehicleHolder, supplyKey } from '../store/gameStore.js'
+import { useGameStore, withActive, charPosition, canFirstAid, vehicleHolder, supplyKey } from '../store/gameStore.js'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -211,19 +211,19 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
       }
     }
 
-    // First Aid — available when an injury hasn't been treated yet and a rest building is present
+    // First Aid — +40 health at a rest building, once per sync period
     if (isActive) {
-      const hasInjury = !!firstAidTarget(char)
       const hasRestBuilding = charSettlement.buildings.some(b =>
         ['house', 'church', 'police_station', 'bunker'].includes(b)
       )
-      if (hasInjury && hasRestBuilding) {
+      if (hasRestBuilding && (char.health ?? 100) < 100) {
+        const ready = canFirstAid(char, reportTime)
         buildingTiles.push({
           label: 'FIRST AID',
-          sub: 'Treat one injury here',
+          sub: ready ? '+40 health, once per sync' : 'Used — again after the next sync',
           icon: '🩹', tileType: 'first_aid',
           danger: false, highlight: false,
-          action: () => { applyFirstAid(); flash('First aid applied — one injury improved') },
+          action: ready ? () => { applyFirstAid(); flash('First aid applied — +40 health') } : null,
         })
       }
     }
@@ -297,19 +297,10 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
           </div>
         </InfoBlock>
 
-        {/* Muscle Power + Injury diagram */}
         <InfoBlock label="VITALS">
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-            <div style={{ flex: 1 }}>
-              <StatBar label="HEALTH" value={char.health ?? 100} color={
-                (char.health ?? 100) > 60 ? '#27ae60' : (char.health ?? 100) > 30 ? '#e67e22' : '#e74c3c'
-              } />
-              <StatBar label="MUSCLE POWER" value={char.stamina ?? 100} color={
-                (char.stamina ?? 100) > 40 ? '#3498db' : '#e67e22'
-              } />
-            </div>
-            {char.injuries && <BodyDiagram injuries={char.injuries} />}
-          </div>
+          <StatBar label="HEALTH" value={char.health ?? 100} color={
+            (char.health ?? 100) > 60 ? '#27ae60' : (char.health ?? 100) > 30 ? '#e67e22' : '#e74c3c'
+          } />
         </InfoBlock>
 
         {/* Supplies — each character carries their own */}
@@ -502,36 +493,6 @@ function ActionBtn({ label, sub, icon, disabled, onClick }) {
         <div style={{ fontSize: 8, color: disabled ? '#334455' : '#5577aa', letterSpacing: 1, marginTop: 2 }}>{sub}</div>
       </div>
     </button>
-  )
-}
-
-function BodyDiagram({ injuries }) {
-  const c = p => injuries[p] === 'out' ? '#e74c3c' : injuries[p] === 'hurt' ? '#e67e22' : '#27ae60'
-  const label = p => injuries[p] === 'out' ? '✕' : injuries[p] === 'hurt' ? '!' : ''
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-      <div style={{ fontSize: 7, color: '#446688', letterSpacing: 1, marginBottom: 2 }}>BODY</div>
-      <svg width="64" height="96" viewBox="0 0 64 96">
-        {/* Head */}
-        <circle cx="32" cy="9" r="8" fill={c('head')} opacity={0.85} />
-        <text x="32" y="13" textAnchor="middle" fontSize="7" fill="#000" fontWeight="bold">{label('head')}</text>
-        {/* Body */}
-        <rect x="20" y="19" width="24" height="22" rx="3" fill={c('body')} opacity={0.85} />
-        <text x="32" y="33" textAnchor="middle" fontSize="7" fill="#000" fontWeight="bold">{label('body')}</text>
-        {/* Left arm */}
-        <rect x="7" y="20" width="11" height="20" rx="3" fill={c('leftArm')} opacity={0.85} />
-        <text x="12" y="32" textAnchor="middle" fontSize="6" fill="#000" fontWeight="bold">{label('leftArm')}</text>
-        {/* Right arm */}
-        <rect x="46" y="20" width="11" height="20" rx="3" fill={c('rightArm')} opacity={0.85} />
-        <text x="51" y="32" textAnchor="middle" fontSize="6" fill="#000" fontWeight="bold">{label('rightArm')}</text>
-        {/* Left leg */}
-        <rect x="20" y="43" width="10" height="28" rx="3" fill={c('leftLeg')} opacity={0.85} />
-        <text x="25" y="59" textAnchor="middle" fontSize="7" fill="#000" fontWeight="bold">{label('leftLeg')}</text>
-        {/* Right leg */}
-        <rect x="34" y="43" width="10" height="28" rx="3" fill={c('rightLeg')} opacity={0.85} />
-        <text x="39" y="59" textAnchor="middle" fontSize="7" fill="#000" fontWeight="bold">{label('rightLeg')}</text>
-      </svg>
-    </div>
   )
 }
 

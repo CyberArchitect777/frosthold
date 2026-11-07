@@ -43,7 +43,6 @@ export function PauseMenu() {
         }}>
           <StatLine label="Day" value={currentDay} />
           <StatLine label="Health" value={`${Math.round(player.health)}%`} />
-          <StatLine label="Stamina" value={`${Math.round(player.stamina)}%`} />
           <StatLine label="Reputation" value={player.reputation} />
           <StatLine label="Allies recruited" value={`${recruited} / ${total}`} />
         </div>

@@ -31,15 +31,12 @@ export default function App() {
   const updatePlayer = useGameStore(s => s.updatePlayer)
   const allies = useGameStore(s => s.allies)
   const settlements = useGameStore(s => s.settlements)
-  const drainStamina = useGameStore(s => s.drainStamina)
   const drainFuel = useGameStore(s => s.drainFuel)
-  const recoverStamina = useGameStore(s => s.recoverStamina)
   const advanceTime           = useGameStore(s => s.advanceTime)
   const chargeEntryTime       = useGameStore(s => s.chargeEntryTime)
   const synchroniseWatches    = useGameStore(s => s.synchroniseWatches)
   const switchCharacter       = useGameStore(s => s.switchCharacter)
   const takeDamage            = useGameStore(s => s.takeDamage)
-  const inflictInjury         = useGameStore(s => s.inflictInjury)
   const abandonVehicle        = useGameStore(s => s.abandonVehicle)
   const abandonedVehicles     = useGameStore(s => s.abandonedVehicles)
   const enemyVehicles         = useGameStore(s => s.enemyVehicles)
@@ -139,9 +136,6 @@ export default function App() {
       } else if (type === 'playerHit') {
         takeDamage(damage)
         if (mode === 'snowcat') updatePlayer({ vehicle: null, travelMode: 'ski' })
-        // Combat hits → random body/arm/head injury
-        const combatParts = ['body', 'body', 'body', 'leftArm', 'rightArm', 'head']
-        inflictInjury(combatParts[Math.floor(Math.random() * combatParts.length)])
       } else if (type === 'snipeEnemyFire') {
         // Enemy fires back at sniper — reduce cover HP
         const current = snipeStateRef.current
@@ -160,7 +154,7 @@ export default function App() {
     }
 
     // Bridge engine updates → Zustand store
-    engine.onUpdate = ({ position, rotation, speed, staminaDrain, fuelDrain, landingDamage, landed, collisionDamage, buildingCrash, nearSettlement, combatEnemies, dt, debug }) => {
+    engine.onUpdate = ({ position, rotation, speed, fuelDrain, landingDamage, landed, collisionDamage, buildingCrash, nearSettlement, combatEnemies, dt, debug }) => {
       updatePlayer({ position, rotation, speed })
 
       // Compute enemy bearing for HUD directional lights
@@ -182,8 +176,6 @@ export default function App() {
         enemyBearingRef.current = null
         setEnemyBearing(null)
       }
-      if (staminaDrain > 0) drainStamina(staminaDrain)
-      else recoverStamina(-staminaDrain)
       if (fuelDrain > 0) {
         drainFuel(fuelDrain)
         const { player: p } = useGameStore.getState()
@@ -191,19 +183,9 @@ export default function App() {
           abandonVehicle()
         }
       }
-      if (landingDamage > 0) {
-        takeDamage(landingDamage)
-        // Hard landings damage legs
-        if (landingDamage > 20) inflictInjury(['leftLeg', 'rightLeg'][Math.floor(Math.random() * 2)])
-        if (landingDamage > 50) inflictInjury(['leftLeg', 'rightLeg'][Math.floor(Math.random() * 2)])
-      }
+      if (landingDamage > 0) takeDamage(landingDamage)
       if (landed) abandonVehicle()
-      if (collisionDamage > 0) {
-        takeDamage(collisionDamage)
-        // Collisions damage legs or body
-        const crashParts = ['leftLeg', 'rightLeg', 'body', 'leftArm']
-        inflictInjury(crashParts[Math.floor(Math.random() * crashParts.length)])
-      }
+      if (collisionDamage > 0) takeDamage(collisionDamage)
       if (buildingCrash) {
         if (useGameStore.getState().player.vehicle) abandonVehicle()
         setUiMode('hub')
@@ -227,7 +209,6 @@ export default function App() {
     // Vehicles too: after Continue they haven't changed, so their effects below don't fire
     engine.setEnemyVehicles(currentEnemies)
     engine.setAbandonedVehicles(currentAbandoned)
-    engine.setInjuries(currentPlayer.injuries)
 
     return () => {
       engine.dispose()
@@ -281,20 +262,6 @@ export default function App() {
   useEffect(() => {
     engineRef.current?.setTravelMode(storeTravelMode)
   }, [storeTravelMode])
-
-  // Sync injuries to engine whenever they change
-  const playerInjuries = useGameStore(s => s.player.injuries)
-  useEffect(() => {
-    engineRef.current?.setInjuries(playerInjuries)
-  }, [playerInjuries])
-
-  // Head knocked out → force exit from action (unconscious)
-  useEffect(() => {
-    if (playerInjuries?.head === 'out' && uiMode === 'action') {
-      if (useGameStore.getState().player.travelMode === 'paramotor') abandonVehicle()
-      setUiMode('hub')
-    }
-  }, [playerInjuries, uiMode])
 
   // Pipe gyroscope to engine (only when enabled, never in snipe mode)
   useEffect(() => {
@@ -717,7 +684,7 @@ function SituationReport({ report: r, onClose }) {
       <Row label="Sabotage" value={f.sabotages} good={f.sabotages > 0} />
       <Row label="Recruits" value={f.recruits} good={f.recruits > 0} />
       <Row label="Team free" value={f.teamFree}
-        note={[f.teamInjured && `${f.teamInjured} injured`, f.teamCaptured && `${f.teamCaptured} captured`, f.teamKilled && `${f.teamKilled} killed`].filter(Boolean).join(', ') || null} />
+        note={[f.teamWounded && `${f.teamWounded} badly hurt`, f.teamCaptured && `${f.teamCaptured} captured`, f.teamKilled && `${f.teamKilled} killed`].filter(Boolean).join(', ') || null} />
       <Row label="Expected collapse" value={`day ${f.collapseDay}`}
         note={f.collapseChange ? `${signed(f.collapseChange)} days` : null} good={f.collapseChange < 0} warn={f.collapseChange > 0} />
       <button onClick={onClose} style={{
@@ -904,9 +871,6 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
                 <MiniBar value={char.health ?? 100} color={
                   (char.health ?? 100) > 60 ? '#27ae60' : (char.health ?? 100) > 30 ? '#e67e22' : '#e74c3c'
                 } label="HP" />
-                <MiniBar value={char.stamina ?? 100} color={
-                  (char.stamina ?? 100) > 40 ? '#3498db' : '#e67e22'
-                } label="MP" />
               </div>
             </button>
           )

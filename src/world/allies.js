@@ -126,10 +126,8 @@ export function generateAllies(worldSeed) {
       status: isPlayer ? 'recruited' : 'free',
       morale,
       health: 100,
-      stamina: 100,
       personalTime: 720,
       vehicle: null,
-      injuries: { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' },
     }
   })
 

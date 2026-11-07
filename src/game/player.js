@@ -19,8 +19,6 @@ const PARAMOTOR_SINK       = 3.0    // m/s down while descending
 const PARAMOTOR_FLARE      = 1.2    // m/s — most sink rate in the last few metres, for a soft landing
 const PARAMOTOR_TAKEOFF    = 2.0    // s of automatic climb after take-off
 const COLLISION_RADIUS    = 0.5
-const STAMINA_DRAIN_SKI = 1.2
-const STAMINA_RECOVER   = 4
 
 export class PlayerController {
   constructor(camera) {
@@ -48,9 +46,6 @@ export class PlayerController {
     this.touchBrake    = false
     this.touchLeft     = false
     this.touchRight    = false
-
-    // Injury state (set by engine from store)
-    this._injuries = null
 
     // Mouse joystick for desktop steering (non-touch only)
     this.mouseX         = window.innerWidth / 2
@@ -111,27 +106,6 @@ export class PlayerController {
     }
     this._skiingActive = false
     this._braking = false
-  }
-
-  setInjuries(injuries) { this._injuries = injuries }
-
-  _injuryMults() {
-    const inj = this._injuries
-    if (!inj) return { speedMult: 1, staminaMult: 1, canSki: true }
-    if (inj.head === 'out') return { speedMult: 0, staminaMult: 5, canSki: false }
-
-    const legScore = (inj.leftLeg  === 'out' ? 2 : inj.leftLeg  === 'hurt' ? 1 : 0)
-                   + (inj.rightLeg === 'out' ? 2 : inj.rightLeg === 'hurt' ? 1 : 0)
-    const bodyBonus = inj.body === 'out' ? 0.5 : inj.body === 'hurt' ? 0.2 : 0
-
-    const speedMults  = [1.0, 0.8, 0.65, 0.45, 0.0]
-    const drainMults  = [1.0, 1.3, 1.6,  2.0,  4.0]
-
-    return {
-      speedMult:  Math.max(0, speedMults[legScore] - bodyBonus),
-      staminaMult: drainMults[legScore] + bodyBonus,
-      canSki: legScore < 4,
-    }
   }
 
   consumeLandingDamage() {
@@ -202,10 +176,8 @@ export class PlayerController {
     if (forwardPush) { this._skiingActive = true; this._braking = false }
     if (brakeTap && this._skiingActive && !this._braking) this._braking = true
 
-    const { speedMult, canSki } = this._injuryMults()
-    if (!this._skiingActive || !canSki) {
+    if (!this._skiingActive) {
       this.velocity.set(0, 0, 0)
-      if (!canSki) this._skiingActive = false
     } else {
       // Friction
       this.velocity.multiplyScalar(1 - SKI_FRICTION * dt)
@@ -241,11 +213,10 @@ export class PlayerController {
         }
       }
 
-      // Speed cap scaled by leg injury
+      // Speed cap
       const speed = this.velocity.length()
-      const effectiveMax = SKI_MAX_SPEED * speedMult
-      if (speed > effectiveMax) {
-        this.velocity.multiplyScalar(effectiveMax / speed)
+      if (speed > SKI_MAX_SPEED) {
+        this.velocity.multiplyScalar(SKI_MAX_SPEED / speed)
       }
     }
 
@@ -437,26 +408,10 @@ export class PlayerController {
     this.camera.rotation.copy(this.rotation)
   }
 
-  getStaminaDrain(dt, weatherMult = 1.0) {
-    if (this.travelMode === 'snowcat') return 0
-
-    const isPushing = this.keys['ArrowUp'] || this.keys['KeyW'] || this.touchForward
-    const { staminaMult } = this._injuryMults()
-
-    if (this.travelMode === 'ski') {
-      return isPushing
-        ? STAMINA_DRAIN_SKI * dt * weatherMult * staminaMult
-        : -STAMINA_RECOVER * dt
-    }
-
-    if (this.travelMode === 'paramotor') return 0.5 * dt * staminaMult
-
-    return -STAMINA_RECOVER * dt
-  }
-
   getFuelDrain(dt) {
-    if (this.travelMode === 'snowcat')   return 0.3 * dt   // 100 fuel ≈ 5.5 min
-    if (this.travelMode === 'paramotor') return 0.25 * dt  // 100 fuel ≈ 6.7 min
+    // Fuel is % of a full tank (owner 2026-11-07: snowcat tank halved, paramotor tank cut by 70%)
+    if (this.travelMode === 'snowcat')   return 0.6 * dt          // full tank ≈ 2.75 min
+    if (this.travelMode === 'paramotor') return (0.25 / 0.3) * dt // full tank = 2 min
     return 0
   }
 

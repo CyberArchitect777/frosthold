@@ -31,7 +31,8 @@ export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
 
   const compassDir = getCompassDir(compassAngle)
 
-  const staminaColor = player.stamina > 40 ? '#3498db' : '#e67e22'
+  const health = player.health ?? 100
+  const healthColor = health > 60 ? '#27ae60' : health > 30 ? '#e67e22' : '#e74c3c'
 
   return (
     <>
@@ -74,7 +75,7 @@ export function HUD({ terrainDebug, showDebug, inCombat, enemyBearing }) {
 
       {/* Status bars */}
       <div style={{ flex: 1, margin: '0 16px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <StatBar label="ST" value={player.stamina} color={staminaColor} />
+        <StatBar label="HP" value={health} color={healthColor} format={v => `${Math.round(v)}`} />
         {(player.travelMode === 'snowcat' || player.travelMode === 'paramotor') && (
           <StatBar label="FUEL" value={player.fuel} color="#f39c12" format={v => `${Math.max(0, Math.round(v))}%`} />
         )}

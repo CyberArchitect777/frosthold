@@ -69,7 +69,6 @@ export class GameEngine {
     this._enemyMissiles = []        // { mesh, x, z, y, vx, vy, vz }
     this._missileMat = null
     this._travelMode = 'ski'        // tracked for gun accuracy
-    this._injuries = null
     this._explosionEffects = []     // active explosion animations
 
     // World enemy vehicle rendering (visible at all times in 3D)
@@ -84,7 +83,7 @@ export class GameEngine {
     this._snipeYaw = 0              // camera yaw while sniping
     this._snipePitch = 0            // camera pitch while sniping
 
-    this.onUpdate = null       // callback({ position, rotation, speed, staminaDrain, dt })
+    this.onUpdate = null       // callback({ position, rotation, speed, fuelDrain, dt, … })
     this.onCombatEvent = null  // callback({ type, vehicleId, damage, mode, destroyed })
 
     this._init()
@@ -374,7 +373,6 @@ export class GameEngine {
     this.camera.position.copy(p.position)
     this._rebuildTerrain(x, z)
   }
-  setInjuries(injuries) { this._injuries = injuries; this.player.setInjuries(injuries) }
   setTouchForward(active)  { this.player.setTouchForward(active) }
   setTouchBrake(active)    { this.player.setTouchBrake(active) }
   setTouchLeft(active)     { this.player.setTouchLeft(active) }
@@ -581,7 +579,6 @@ export class GameEngine {
         position: playerState.position,
         rotation: playerState.rotation,
         speed: playerState.speed,
-        staminaDrain: this.player.getStaminaDrain(dt),
         fuelDrain: this.player.getFuelDrain(dt),
         landingDamage: this.player.consumeLandingDamage(),
         landed,
@@ -914,11 +911,7 @@ export class GameEngine {
     if (!this._combatActive) return false
     const enemy = this._nearestCombatEnemy()
     if (!enemy) return false
-    const inj = this._injuries
-    if (inj && (inj.leftArm === 'out' || inj.rightArm === 'out' || inj.head === 'out')) return false
-    const armScore = inj ? (inj.leftArm === 'hurt' ? 1 : 0) + (inj.rightArm === 'hurt' ? 1 : 0) : 0
-    const armMult  = [1.0, 0.8, 0.6][armScore]
-    const hitChance = (this._travelMode === 'snowcat' ? 0.50 : 0.25) * armMult
+    const hitChance = this._travelMode === 'snowcat' ? 0.50 : 0.25
     const hit = Math.random() < hitChance
     if (hit) {
       this._showGlint(enemy.id)
@@ -1022,13 +1015,9 @@ export class GameEngine {
     this._snipeVehicleHits = {}
   }
 
-  // Returns { hit: bool, vehicleId?, destroyed?, hits?, blocked? }
+  // Returns { hit: bool, vehicleId?, destroyed?, hits? }
   snipeFire(weaponType) {
     if (!this._snipeActive) return { hit: false }
-    const inj = this._injuries
-    if (inj && (inj.leftArm === 'out' || inj.rightArm === 'out' || inj.head === 'out')) {
-      return { hit: false, blocked: true }
-    }
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion)
     const fwdH = new THREE.Vector3(fwd.x, 0, fwd.z)
     if (fwdH.lengthSq() < 0.001) return { hit: false }
@@ -1059,8 +1048,7 @@ export class GameEngine {
       this._triggerExplosion(ex, eh, ez)  // audio handled inside _triggerExplosion
       return { hit: true, vehicleId: bestVehicle.id, destroyed: true }
     } else {
-      const armScore2 = inj ? (inj.leftArm === 'hurt' ? 1 : 0) + (inj.rightArm === 'hurt' ? 1 : 0) : 0
-      if (Math.random() < 0.55 * [1.0, 0.8, 0.6][armScore2]) {
+      if (Math.random() < 0.55) {
         this._audio?.playGunShot()
         this._snipeVehicleHits[bestVehicle.id] = (this._snipeVehicleHits[bestVehicle.id] ?? 0) + 1
         const hits = this._snipeVehicleHits[bestVehicle.id]

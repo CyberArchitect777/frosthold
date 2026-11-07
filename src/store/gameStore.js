@@ -11,14 +11,19 @@ const DEATH_CHANCE   = 0.25  // otherwise captured or rescued
 const CAPTURE_RADIUS = 400   // m — an enemy vehicle this close means capture
 const DOWN_HEALTH    = 25    // health after being captured or rescued
 
-const NO_INJURIES = { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' }
+// Healing (owner 2026-11-07: no stamina or body parts; health is the only condition).
+// Resting for a whole sync period heals REST_HEALTH × the place's rate; less time, pro rata.
+const REST_RATE      = { high: 1.0, moderate: 0.6, low: 0.35, minimal: 0.1 }
+const REST_HEALTH    = 30
+const REST_FULL_MINS = 120  // a whole sync period
+const FIRST_AID      = 40   // health from first aid, once per character per sync period
 
 // Counters for the situation report, reset at each sync
 const NO_STATS = { kills: 0, sabotages: 0, recruits: 0 }
 
 // Kit every character starts with (the starting character and each recruit)
 const STARTING_KIT = {
-  health: 100, stamina: 100, missiles: 1, ammo: 50, dynamite: 0, fuel: 100,
+  health: 100, missiles: 1, ammo: 50, dynamite: 0, fuel: 100,
   activeWeapon: 'missile', travelMode: 'ski', vehicle: null,
 }
 
@@ -45,15 +50,9 @@ export function charPosition(a) {
   return a.position ?? a.location
 }
 
-// The injured body part first aid would treat: an 'out' part first, then a 'hurt' one.
-// Each injury can be treated once; null if there's nothing left to treat.
-export function firstAidTarget(char) {
-  const inj = char.injuries ?? {}
-  const done = char.treatedInjuries ?? {}
-  const open = k => !done[k]
-  return Object.keys(inj).find(k => inj[k] === 'out' && open(k))
-      ?? Object.keys(inj).find(k => inj[k] === 'hurt' && open(k))
-      ?? null
+// First aid is possible when hurt and not yet given this sync period
+export function canFirstAid(char, reportTime) {
+  return (char.health ?? 100) < 100 && char.firstAidAt !== reportTime
 }
 
 function nearest(items, pos) {
@@ -150,7 +149,6 @@ export const useGameStore = create(
     position: { x: 0, y: 1, z: 22 }, // Start south of centre
     rotation: { y: 0 },
     health: 100,
-    stamina: 100,
     travelMode: 'ski',
     inventory: [],
     reputation: 10,
@@ -161,7 +159,6 @@ export const useGameStore = create(
     activeWeapon: 'missile', // 'missile' | 'gun'
     personalTime: 720, // personal watch: minutes since midnight (12:00)
     vehicle: null,
-    injuries: { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' },
   },
 
   // Allies & Settlements
@@ -222,7 +219,6 @@ export const useGameStore = create(
       rotation: { y: 0 },
       reputation: 10,
       inventory: [],
-      injuries: { ...NO_INJURIES },
     }
     set({
       allies: [startChar, ...allies],
@@ -294,25 +290,6 @@ export const useGameStore = create(
     set(s => ({ player: { ...s.player, travelMode: mode } }))
   },
 
-  drainStamina(amount) {
-    set(s => {
-      const stamina = Math.max(0, s.player.stamina - amount)
-      const health = stamina === 0 ? Math.max(0, s.player.health - amount * 0.5) : s.player.health
-      return { player: { ...s.player, stamina, health } }
-    })
-    const s = get()
-    if (s.activeAllyId && s.player.health <= 0) s.characterDown()
-  },
-
-  recoverStamina(amount) {
-    set(s => ({
-      player: {
-        ...s.player,
-        stamina: Math.min(100, s.player.stamina + amount),
-      }
-    }))
-  },
-
   drainFuel(amount) {
     set(s => ({
       player: { ...s.player, fuel: Math.max(0, s.player.fuel - amount) }
@@ -358,14 +335,14 @@ export const useGameStore = create(
         Object.assign(down, { status: 'dead', health: 0 })
       } else if (outcome === 'captured') {
         Object.assign(down, {
-          status: 'captured', heldAt: prison.id, health: DOWN_HEALTH, stamina: 0,
+          status: 'captured', heldAt: prison.id, health: DOWN_HEALTH,
           missiles: 0, ammo: 0, dynamite: 0,
           position: { x: prison.x, y: 2, z: prison.z },
         })
       } else {
         // Frozen until the next sync
         Object.assign(down, {
-          health: DOWN_HEALTH, stamina: 0,
+          health: DOWN_HEALTH,
           personalTime: Math.max(me.personalTime, s.reportTime),
           position: { x: refuge.x, y: 2, z: refuge.z },
         })
@@ -418,7 +395,7 @@ export const useGameStore = create(
       allies: s.allies.map(a => a.id === allyId ? {
         ...a, ...STARTING_KIT, status: 'recruited', personalTime: s.player.personalTime,
         position: { x: a.location.x, y: 2, z: a.location.z }, rotation: { y: 0 },
-        reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
+        reputation: 10, inventory: [],
       } : a),
       recruitedAllies: [...s.recruitedAllies, allyId],
       player: { ...s.player, reputation: s.player.reputation + 5 },
@@ -427,27 +404,11 @@ export const useGameStore = create(
     return { result: 'success' }
   },
 
-  inflictInjury(partId) {
-    set(s => {
-      const inj = { ...s.player.injuries }
-      if (inj[partId] === 'fine') inj[partId] = 'hurt'
-      else if (inj[partId] === 'hurt') inj[partId] = 'out'
-      // A worse injury is a new one, so first aid can treat it again
-      const treated = { ...(s.player.treatedInjuries ?? {}), [partId]: false }
-      return { player: { ...s.player, injuries: inj, treatedInjuries: treated } }
-    })
-  },
-
-  // Improve one injury by a step; each injury can only be treated once
+  // First aid at a rest building: an instant health boost, once per sync period
   applyFirstAid() {
-    set(s => {
-      const target = firstAidTarget(s.player)
-      if (!target) return {}
-      const inj = { ...s.player.injuries }
-      inj[target] = inj[target] === 'out' ? 'hurt' : 'fine'
-      const treated = { ...(s.player.treatedInjuries ?? {}), [target]: true }
-      return { player: { ...s.player, injuries: inj, treatedInjuries: treated } }
-    })
+    set(s => canFirstAid(s.player, s.reportTime)
+      ? { player: { ...s.player, health: Math.min(100, s.player.health + FIRST_AID), firstAidAt: s.reportTime } }
+      : {})
   },
 
   // Building interactions
@@ -456,27 +417,15 @@ export const useGameStore = create(
   // Returns false if there's no time left to rest.
   restAtBuilding(rate = 'high') {
     if (get().reportTime - get().player.personalTime <= 0) return false
-    const MULT = { high: 1.0, moderate: 0.6, low: 0.35, minimal: 0.1 }
-    const REST_FULL_MINS   = 120  // a whole sync period
-    const REST_INJURY_MINS = 60   // rest needed to improve an injury
-    const m = MULT[rate] ?? 1.0
+    const m = REST_RATE[rate] ?? 1.0
     set(s => {
       const mins = s.reportTime - s.player.personalTime
       if (mins <= 0) return {}
       const f = Math.min(1, mins / REST_FULL_MINS)
-      const inj = { ...s.player.injuries }
-      if (m >= 0.6 && mins >= REST_INJURY_MINS) {
-        const outPart  = Object.keys(inj).find(k => inj[k] === 'out')
-        const hurtPart = Object.keys(inj).find(k => inj[k] === 'hurt')
-        const target = outPart ?? hurtPart
-        if (target) inj[target] = outPart ? 'hurt' : 'fine'
-      }
       return {
         player: {
           ...s.player,
-          stamina: Math.min(100, s.player.stamina + Math.round(100 * m * f)),
-          health:  Math.min(100, s.player.health  + Math.round(30  * m * f)),
-          injuries: inj,
+          health: Math.min(100, s.player.health + Math.round(REST_HEALTH * m * f)),
           personalTime: s.reportTime,
         }
       }
@@ -594,7 +543,7 @@ export const useGameStore = create(
               if (!ids.includes(a.id)) return a
               // A team member keeps their record; a first-time recruit gets the starting kit
               const fresh = s.recruitedAllies.includes(a.id) ? {} : {
-                ...STARTING_KIT, rotation: { y: 0 }, reputation: 10, inventory: [], injuries: { ...NO_INJURIES },
+                ...STARTING_KIT, rotation: { y: 0 }, reputation: 10, inventory: [],
               }
               // Freed characters carry on from the rescuer's personal time (or their own, if later)
               const personalTime = Math.max(a.personalTime ?? 0, s.player.personalTime)
@@ -745,8 +694,7 @@ export const useGameStore = create(
 
     const rt = s.reportTime
 
-    // Recovery stamina per 60 minutes of rest, by location tier
-    const TIER_RECOVERY = { high: 30, moderate: 18, low: 10, minimal: 4 }
+    // Spare time before the sync is rest: health heals at the rest rate of where each character is
     const BUILDING_TIER = {
       house: 'high', store: 'high', church: 'high', police_station: 'high',
       garage: 'moderate', paramotor_hanger: 'moderate',
@@ -769,20 +717,19 @@ export const useGameStore = create(
         }, 'minimal')
     }
 
-    function applyRest(personalTime, stamina, pos) {
+    function applyRest(personalTime, health, pos) {
       const restMins = rt - personalTime
-      if (restMins <= 0) return stamina
-      const tier = recoveryTier(pos)
-      const gain = Math.round(TIER_RECOVERY[tier] * (restMins / 60))
-      return Math.min(100, stamina + gain)
+      if (restMins <= 0) return health
+      const f = Math.min(1, restMins / REST_FULL_MINS)
+      return Math.min(100, health + Math.round(REST_HEALTH * REST_RATE[recoveryTier(pos)] * f))
     }
 
     // Every watch moves up to the report time; only free team members rest, each where they are
     let newAllies = withActive(s.allies, s.activeAllyId, s.player).map(a => ({
       ...a,
-      stamina: a.status === 'recruited' && s.recruitedAllies.includes(a.id)
-        ? applyRest(a.personalTime, a.stamina ?? 100, charPosition(a))
-        : a.stamina,
+      health: a.status === 'recruited' && s.recruitedAllies.includes(a.id)
+        ? applyRest(a.personalTime, a.health ?? 100, charPosition(a))
+        : a.health,
       personalTime: Math.max(a.personalTime, rt),
     }))
 
@@ -898,8 +845,7 @@ export const useGameStore = create(
         collapseChange: collapseDay - (prev?.friendly.collapseDay ?? 40),
         ...s.periodStats,
         teamFree: team.filter(a => a.status === 'recruited').length,
-        teamInjured: team.filter(a => a.status === 'recruited' &&
-          Object.values(a.injuries ?? {}).some(v => v !== 'fine')).length,
+        teamWounded: team.filter(a => a.status === 'recruited' && (a.health ?? 100) < 50).length,
         teamCaptured: team.filter(a => a.status === 'captured').length,
         teamKilled: team.filter(a => a.status === 'dead').length,
       },
@@ -936,7 +882,6 @@ export const useGameStore = create(
         position: { x: 0, y: 1, z: 22 },
         rotation: { y: 0 },
         health: 100,
-        stamina: 100,
         travelMode: 'ski',
         inventory: [],
         reputation: 10,
