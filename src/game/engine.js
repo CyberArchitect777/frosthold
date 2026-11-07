@@ -146,6 +146,11 @@ export class GameEngine {
     // Resize handler
     this._handleResize = this._onResize.bind(this)
     window.addEventListener('resize', this._handleResize)
+
+    this._onContextLost     = () => { this._contextLost = true }
+    this._onContextRestored = () => { this._contextLost = false }
+    canvas.addEventListener('webglcontextlost', this._onContextLost)
+    canvas.addEventListener('webglcontextrestored', this._onContextRestored)
   }
 
   _setupLighting() {
@@ -376,7 +381,15 @@ export class GameEngine {
   setTouchRight(active)    { this.player.setTouchRight(active) }
 
   pause()  { this.isPaused = true }
-  resume() { this.isPaused = false; this.lastTime = performance.now() }
+  resume() {
+    this.isPaused = false
+    this.lastTime = performance.now()
+    this._onResize()  // the window may have changed (e.g. a phone rotated) while hidden
+  }
+
+  // A phone can drop the WebGL context while the app is in the background; if it never
+  // comes back, App rebuilds the engine on a fresh canvas
+  isContextLost() { return this._contextLost || this.renderer.getContext().isContextLost() }
 
   start() {
     this.isRunning = true
@@ -388,7 +401,17 @@ export class GameEngine {
 
   _loop() {
     if (!this.isRunning) return
+    // Next frame is booked first, so one failing frame can't stop the 3D view for good
+    requestAnimationFrame(() => this._loop())
+    try {
+      this._frame()
+    } catch (e) {
+      if (!this._frameErrorLogged) console.error('Frosthold: 3D frame failed', e)
+      this._frameErrorLogged = true
+    }
+  }
 
+  _frame() {
     const now = performance.now()
     const dt = Math.min((now - this.lastTime) / 1000, 0.05)
     this.lastTime = now
@@ -409,7 +432,6 @@ export class GameEngine {
       this._pausedRenderAt = now
       this.renderer.render(this.scene, this.camera)
     }
-    requestAnimationFrame(() => this._loop())
   }
 
   _update(dt) {
@@ -599,8 +621,66 @@ export class GameEngine {
     if (this._combatActive) this._endCombat('retreat')
   }
 
+  // Abandoned snowcats and paramotors, left where they were parked (N8)
   setAbandonedVehicles(vehicles) {
     this._vehicleData = vehicles ?? []
+    if (!this._abandonedMeshes) this._abandonedMeshes = new Map()  // id → THREE.Group
+    const ids = new Set(this._vehicleData.map(v => v.id))
+    for (const [id, group] of this._abandonedMeshes) {
+      if (!ids.has(id)) { this.scene.remove(group); this._abandonedMeshes.delete(id) }
+    }
+    for (const v of this._vehicleData) {
+      if (this._abandonedMeshes.has(v.id)) continue
+      const group = v.type === 'snowcat' ? this._makeSnowcatMesh() : this._makeParamotorMesh()
+      group.position.set(v.x, sampleHeight(v.x, v.z), v.z)
+      group.rotation.y = (v.x * 7 + v.z * 13) % (Math.PI * 2)  // some variety, stable per spot
+      this.scene.add(group)
+      this._abandonedMeshes.set(v.id, group)
+    }
+  }
+
+  // Geometry and materials shared by every abandoned vehicle
+  _vehicleParts() {
+    if (!this._vparts) {
+      const box = (w, h, d) => new THREE.BoxGeometry(w, h, d)
+      this._vparts = {
+        jeepBody:  box(1.9, 0.8, 3.6),
+        jeepCab:   box(1.7, 0.7, 1.6),
+        wheel:     new THREE.CylinderGeometry(0.42, 0.42, 0.35, 12).rotateZ(Math.PI / 2),
+        gun:       new THREE.CylinderGeometry(0.06, 0.06, 1.4, 6).rotateX(Math.PI / 2),
+        cage:      new THREE.TorusGeometry(0.9, 0.05, 6, 20),
+        seat:      box(0.6, 0.5, 0.5),
+        wing:      box(3.2, 0.08, 1.2),
+        jeepMat:   new THREE.MeshLambertMaterial({ color: 0x8a7a55 }),
+        darkMat:   new THREE.MeshLambertMaterial({ color: 0x222222 }),
+        metalMat:  new THREE.MeshLambertMaterial({ color: 0x9aa4ad }),
+        wingMat:   new THREE.MeshLambertMaterial({ color: 0xd04a2a }),
+      }
+    }
+    return this._vparts
+  }
+
+  // A civilian jeep with a mounted gun
+  _makeSnowcatMesh() {
+    const p = this._vehicleParts()
+    const g = new THREE.Group()
+    const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m) }
+    add(p.jeepBody, p.jeepMat, 0, 0.8, 0)
+    add(p.jeepCab, p.jeepMat, 0, 1.55, 0.3)
+    for (const [x, z] of [[-1, 1.15], [1, 1.15], [-1, -1.15], [1, -1.15]]) add(p.wheel, p.darkMat, x, 0.42, z)
+    add(p.gun, p.darkMat, 0, 2.05, -0.4)
+    return g
+  }
+
+  // A paramotor frame on the snow with its wing laid out behind
+  _makeParamotorMesh() {
+    const p = this._vehicleParts()
+    const g = new THREE.Group()
+    const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m) }
+    add(p.cage, p.metalMat, 0, 0.95, 0)
+    add(p.seat, p.darkMat, 0, 0.3, 0.2)
+    add(p.wing, p.wingMat, 0, 0.05, 2.2)
+    return g
   }
 
   // Build meshes for a single building type, positioned at world (wx, groundY, wz).
@@ -1104,13 +1184,15 @@ export class GameEngine {
       const distToPlayer = Math.hypot(toPX, toPZ) || 1
       const chX = toPX / distToPlayer, chZ = toPZ / distToPlayer
 
-      // Chase
-      let forceX = chX * 10.0
-      let forceZ = chZ * 10.0
+      // Chase — not a paramotor in the air: ground vehicles can't follow it, so they slow to a halt
+      // and only shoot (owner decision 2026-11-07)
+      const chasing = this._travelMode !== 'paramotor'
+      let forceX = chasing ? chX * 10.0 : -enemy.vx * 2
+      let forceZ = chasing ? chZ * 10.0 : -enemy.vz * 2
 
       // Zig-zag: perpendicular to chase direction
       enemy.zigPhase += ZIG_FREQ * dt
-      const zigAmt = Math.sin(enemy.zigPhase) * ZIG_AMP
+      const zigAmt = chasing ? Math.sin(enemy.zigPhase) * ZIG_AMP : 0
       forceX += -chZ * zigAmt
       forceZ +=  chX * zigAmt
 
@@ -1253,6 +1335,8 @@ export class GameEngine {
   dispose() {
     this.stop()
     window.removeEventListener('resize', this._handleResize)
+    this.canvas.removeEventListener('webglcontextlost', this._onContextLost)
+    this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored)
     this.weather.dispose()
     this.player.dispose()
 
@@ -1290,6 +1374,14 @@ export class GameEngine {
       entry.bodyGeo.dispose(); entry.mat.dispose()
     }
     this._worldEnemyMeshes.clear()
+
+    if (this._abandonedMeshes) {
+      for (const group of this._abandonedMeshes.values()) this.scene.remove(group)
+      this._abandonedMeshes.clear()
+    }
+    if (this._vparts) {
+      for (const part of Object.values(this._vparts)) part.dispose()
+    }
 
     this.renderer.dispose()
   }

@@ -28,6 +28,7 @@ export function StrategyMap({ onBack }) {
   const contestedSettlements = useGameStore(s => s.contestedSettlements)
   const worldSeed    = useGameStore(s => s.worldSeed)
   const activeAllyId = useGameStore(s => s.activeAllyId)
+  const recruitedAllies = useGameStore(s => s.recruitedAllies)
   const selectAlly = useGameStore(s => s.selectAlly)
   const selectedAlly = useGameStore(s => s.selectedAlly)
   const setUiMode = useGameStore(s => s.setUiMode)
@@ -229,24 +230,51 @@ export function StrategyMap({ onBack }) {
         recruited: 'rgba(52,152,219,0.85)',
         captured:  'rgba(230,126,34,0.85)',
       }
-      for (const a of (allies ?? [])) {
-        if (a.id === activeAllyId) continue   // active character shown as player marker
-        if (a.status === 'dead') continue
-        const apos = charPosition(a)          // team members where they are; others at home
+      // Name (and any vehicle held) beside a team member's marker
+      function teamLabel(a, x, y, r, colour) {
+        const tag = a.vehicle === 'snowcat' ? ' · SNOWCAT' : a.vehicle === 'paramotor' ? ' · PARAMOTOR' : ''
+        ctx.font = 'bold 10px Courier New'
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'middle'
+        ctx.lineWidth = 3
+        ctx.strokeStyle = 'rgba(8,15,28,0.9)'
+        ctx.strokeText(a.name + tag, x + r + 4, y)
+        ctx.fillStyle = colour
+        ctx.fillText(a.name + tag, x + r + 4, y)
+      }
+      // Officers not on the team first (small), then team members on top (large, named)
+      const others = (allies ?? []).filter(a => a.status !== 'dead' && a.id !== activeAllyId)
+      const team = others.filter(a => recruitedAllies.includes(a.id))  // free or captured
+      for (const a of others.filter(a => !team.includes(a))) {
+        const apos = charPosition(a)          // officers sit at home
         if (!apos) continue
         const { cx: ax, cy: ay } = worldToCanvas(apos.x, apos.z, canvas)
         ctx.beginPath()
-        ctx.arc(ax, ay, 6, 0, Math.PI * 2)
+        ctx.arc(ax, ay, 4, 0, Math.PI * 2)
         ctx.fillStyle = ALLY_COLOURS[a.status] ?? 'rgba(39,174,96,0.85)'
         ctx.fill()
         ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 1.5
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+      for (const a of team) {
+        const apos = charPosition(a)          // team members where they are
+        if (!apos) continue
+        const { cx: ax, cy: ay } = worldToCanvas(apos.x, apos.z, canvas)
+        ctx.beginPath()
+        ctx.arc(ax, ay, 7, 0, Math.PI * 2)
+        ctx.fillStyle = a.status === 'captured' ? ALLY_COLOURS.captured : '#3498db'
+        ctx.fill()
+        ctx.strokeStyle = '#fff'
+        ctx.lineWidth = 2
         ctx.stroke()
         ctx.fillStyle = '#fff'
-        ctx.font = 'bold 7px Courier New'
+        ctx.font = 'bold 8px Courier New'
         ctx.textAlign = 'center'
         ctx.textBaseline = 'middle'
         ctx.fillText(a.name.charAt(0).toUpperCase(), ax, ay)
+        teamLabel(a.status === 'captured' ? { ...a, name: `${a.name} (captured)` } : a, ax, ay, 7,
+          a.status === 'captured' ? '#f0a860' : '#a8d8ff')
       }
 
       // Draw player position (active character, if one is deployed)
@@ -267,6 +295,7 @@ export function StrategyMap({ onBack }) {
       ctx.strokeStyle = '#f39c12'
       ctx.lineWidth = 2
       ctx.stroke()
+      teamLabel(player, plx, ply, 8, '#f39c12')
       }
 
       // North indicator (always in screen corner)
@@ -283,7 +312,7 @@ export function StrategyMap({ onBack }) {
     }
 
     draw()
-  }, [player, allies, activeAllyId, settlements, worldSeed, invasionPoint, abandonedVehicles, enemyVehicles, capturedSettlements, contestedSettlements, selectedAlly, selectedSettlement, worldToCanvas, zoom, pan])
+  }, [player, allies, activeAllyId, recruitedAllies, settlements, worldSeed, invasionPoint, abandonedVehicles, enemyVehicles, capturedSettlements, contestedSettlements, selectedAlly, selectedSettlement, worldToCanvas, zoom, pan])
 
   function handleTap(e) {
     const canvas = canvasRef.current
@@ -518,8 +547,8 @@ export function StrategyMap({ onBack }) {
             {[
               ['rgba(200,200,200,0.6)',  'Settlement'],
               ['rgba(255,160,60,0.8)',   'Heat mine'],
-              ['rgba(39,174,96,0.85)',   'Ally'],
-              ['rgba(52,152,219,0.85)',  'Recruited ally'],
+              ['rgba(39,174,96,0.85)',   'Officer (not recruited)'],
+              ['#3498db',                'Team member'],
               ['rgba(231,76,60,0.9)',    'Captured settlement'],
               ['rgba(255,143,171,0.9)', 'Abandoned vehicle'],
             ].map(([fill, label]) => (

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useGameStore, withActive, charPosition, firstAidTarget } from '../store/gameStore.js'
+import { useGameStore, withActive, charPosition, firstAidTarget, vehicleHolder, supplyKey } from '../store/gameStore.js'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -11,12 +11,12 @@ function fmtTime(mins) {
 const BUILDING_TILE_DEFS = {
   house:           { label: 'HOUSE · REST',       sub: 'Eat, sleep & recover',        icon: '🏠', tileType: 'rest',      danger: false, recoveryRate: 'high'     },
   church:          { label: 'CHURCH · REST',       sub: 'Shelter & sniping platform',  icon: '⛪', tileType: 'rest',      danger: false, recoveryRate: 'moderate' },
-  store:           { label: 'STORE · SUPPLIES',    sub: 'Restock missile & ammo',      icon: '🏪', tileType: 'store',     danger: false, recoveryRate: 'high'     },
+  store:           { label: 'STORE · SUPPLIES',    sub: 'Missile, ammo & fuel', icon: '🏪', tileType: 'store',     danger: false, recoveryRate: 'high'     },
   police_station:  { label: 'POLICE · REST',        sub: 'Rest — ally already recruited', icon: '🔓', tileType: 'police',   danger: false, recoveryRate: 'high'     },
   garage:          { label: 'GARAGE · VEHICLES',   sub: 'Acquire & refuel snowcat',    icon: '🚙', tileType: 'garage',    danger: false, recoveryRate: 'moderate' },
-  paramotor_hanger: { label: 'HANGAR · FLY',      sub: 'Collect & launch paramotor',  icon: '🪂', tileType: 'ascend',    danger: false, recoveryRate: 'moderate' },
+  paramotor_hanger: { label: 'HANGAR · FLY',      sub: 'Refuel & launch paramotor',  icon: '🪂', tileType: 'ascend',    danger: false, recoveryRate: 'moderate' },
   heat_mine:       { label: 'HEAT MINE · DEFEND',  sub: 'Resistance asset — hold',     icon: '♨️', tileType: 'heat_mine', danger: false, recoveryRate: 'minimal'  },
-  magazine:        { label: 'MAGAZINE · AMMO',     sub: 'Full ammo resupply',          icon: '🎯', tileType: 'magazine',  danger: false, recoveryRate: 'low'      },
+  magazine:        { label: 'MAGAZINE · AMMO',     sub: 'Full resupply',      icon: '🎯', tileType: 'magazine',  danger: false, recoveryRate: 'low'      },
   bunker:          { label: 'WATCHTOWER · REST',   sub: 'Elevated cover — partial rest', icon: '🗼', tileType: 'bunker',  danger: false, recoveryRate: 'low'      },
   synthesis_factory: { label: 'FACTORY · DESTROY', sub: 'Clones enemy vehicles — use dynamite', icon: '🏭', tileType: 'sabotage', danger: true, recoveryRate: 'low' },
 }
@@ -34,7 +34,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const restAtBuilding   = useGameStore(s => s.restAtBuilding)
   const resupplyStore    = useGameStore(s => s.resupplyStore)
   const resupplyMagazine = useGameStore(s => s.resupplyMagazine)
-  const refuelGarage     = useGameStore(s => s.refuelGarage)
+  const refuelVehicle    = useGameStore(s => s.refuelVehicle)
   const acquireSnowcat   = useGameStore(s => s.acquireSnowcat)
   const ascendCableCar   = useGameStore(s => s.ascendCableCar)
   const sabotageBuilding = useGameStore(s => s.sabotageBuilding)
@@ -43,6 +43,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
   const applyFirstAid   = useGameStore(s => s.applyFirstAid)
   const collectVehicle   = useGameStore(s => s.collectVehicle)
   const abandonedVehicles = useGameStore(s => s.abandonedVehicles)
+  const usedSupplies      = useGameStore(s => s.usedSupplies)
 
   const [feedback, setFeedback] = useState(null)
   function flash(msg) { setFeedback(msg); setTimeout(() => setFeedback(null), 2500) }
@@ -100,18 +101,31 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
       let customTile = null
       if (isActive) {
         const rate = def.recoveryRate
+        // Resting uses up the period, so it ends on the Team screen
+        const rest = () => { if (restAtBuilding(rate)) onBack(); else flash('No time left to rest before sync') }
         switch (def.tileType) {
-          case 'rest':    action = () => flash(restAtBuilding(rate) ? `Rested until sync — ${rate} recovery` : 'No time left to rest before sync'); break
-          case 'store':   action = () => { resupplyStore(); flash('Resupplied: missile + 20 rounds') }; break
-          case 'magazine':action = () => { resupplyMagazine(); flash('Armoury: full resupply') }; break
+          case 'rest':    action = rest; break
+          case 'store':
+          case 'magazine': {
+            // Each character can use each store or magazine once per sync period
+            if (usedSupplies.includes(supplyKey(activeAllyId, charSettlement.id, def.tileType))) {
+              customTile = { ...def, buildingType: bType, action: null, highlight: false, sub: 'Used — restocks at the next sync' }
+            } else if (def.tileType === 'store') {
+              action = () => { resupplyStore(charSettlement.id); flash(player.vehicle ? 'Resupplied: missile, 20 rounds and fuel' : 'Resupplied: missile + 20 rounds') }
+            } else {
+              action = () => { resupplyMagazine(charSettlement.id); flash('Armoury: full resupply') }
+            }
+            break
+          }
           case 'garage': action = () => {
-            if (player.travelMode === 'snowcat') { refuelGarage(); flash('Snowcat refuelled') }
-            else if (player.travelMode === 'paramotor') { refuelGarage(); flash('Paramotor refuelled') }
-            else { acquireSnowcat(); onSki(); }
+            if (player.vehicle === 'snowcat') { refuelVehicle(); flash('Snowcat refuelled') }
+            else if (player.vehicle === 'paramotor') flash('A garage only refuels snowcats')
+            else if (acquireSnowcat()) onSki()
+            else flash(`The snowcat is with ${vehicleHolder(useGameStore.getState(), 'snowcat')?.name ?? 'the team'}`)
           }; break
           case 'ascend':  action = () => {
             if (ascendCableCar()) onSki()
-            else flash('Paramotor already taken by the team')
+            else flash(`The paramotor is with ${vehicleHolder(useGameStore.getState(), 'paramotor')?.name ?? 'the team'}`)
           }; break
           case 'police': {
             const stationAlly = allies.find(a => a.id === charSettlement.allyId)
@@ -142,12 +156,12 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
                 },
               }
             } else {
-              action = () => flash(restAtBuilding(rate) ? 'Rested at police station until sync' : 'No time left to rest before sync')
+              action = rest
             }
             break
           }
           case 'heat_mine': break
-          case 'bunker':  action = () => flash(restAtBuilding(rate) ? 'Watchtower — partial rest until sync' : 'No time left to rest before sync'); break
+          case 'bunker':  action = rest; break
           case 'sabotage':
             if (player.dynamite > 0) {
               action = () => { sabotageBuilding(charSettlement.id, bType); flash('Factory destroyed') }
@@ -169,7 +183,14 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
         a.id === charSettlement.allyId && a.status === 'free' &&
         !charSettlement.buildings.includes('police_station')
       )
-      if (settlementAlly) {
+      if (settlementAlly && player.refusedBy?.includes(settlementAlly.id)) {
+        buildingTiles.push({
+          label: 'RECRUIT ALLY',
+          sub: `${settlementAlly.name} turned ${char.name} down`,
+          icon: '🤝', tileType: 'recruit_field',
+          danger: false, highlight: false, action: null,
+        })
+      } else if (settlementAlly) {
         const rel = player.relationships?.find(r => r.allyId === settlementAlly.id)
         const trust = rel?.trust ?? 0
         const oddsLabel = trust > 30 ? '75% chance' : trust < -30 ? '25% chance' : '50% chance'
@@ -297,7 +318,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
             <SupplyRow icon="🚀" label="MISSILE"  value={char.missiles ?? 0}     max={1}   color="#a8d8ea" />
             <SupplyRow icon="🔫" label="AMMO"     value={char.ammo ?? 0}         max={50}  color="#c8d8a0" />
             <SupplyRow icon="🧨" label="DYNAMITE" value={char.dynamite ?? 0}     max={5}   color="#e74c3c" />
-            {char.vehicle === 'snowcat' && (
+            {char.vehicle && (
               <SupplyRow icon="⛽" label="FUEL" value={Math.round(char.fuel ?? 0)} max={100} color="#f39c12" />
             )}
           </InfoBlock>

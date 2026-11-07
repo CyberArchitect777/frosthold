@@ -13,6 +13,9 @@ const DOWN_HEALTH    = 25    // health after being captured or rescued
 
 const NO_INJURIES = { leftArm: 'fine', rightArm: 'fine', leftLeg: 'fine', rightLeg: 'fine', body: 'fine', head: 'fine' }
 
+// Counters for the situation report, reset at each sync
+const NO_STATS = { kills: 0, sabotages: 0, recruits: 0 }
+
 // Kit every character starts with (the starting character and each recruit)
 const STARTING_KIT = {
   health: 100, stamina: 100, missiles: 1, ammo: 50, dynamite: 0, fuel: 100,
@@ -24,6 +27,17 @@ const STARTING_KIT = {
 export function withActive(allies, activeAllyId, player) {
   if (!activeAllyId) return allies
   return allies.map(a => a.id === activeAllyId ? { ...a, ...player } : a)
+}
+
+// Key for usedSupplies: each character can use each store or magazine once per sync period
+export function supplyKey(charId, settlementId, type) {
+  return `${charId}:${settlementId}:${type}`
+}
+
+// The living character holding the team's snowcat or paramotor, or null
+export function vehicleHolder(s, type) {
+  return withActive(s.allies, s.activeAllyId, s.player)
+    .find(a => a.vehicle === type && a.status !== 'dead') ?? null
 }
 
 // Where a character is now: team members have a position, others sit at their home settlement.
@@ -172,6 +186,9 @@ export const useGameStore = create(
   capturedSettlements: [],    // settlement IDs fully under enemy control
   contestedSettlements: [],   // [{ id, vehicleId, progress }] — under siege; progress = syncs so far
   minesAtDayStart: 0,         // capturedHeatMines when the current day began (stalled-offensive check)
+  usedSupplies: [],           // ["characterId:settlementId:buildingType"] resupplied this sync period
+  periodStats: { ...NO_STATS }, // what the team did this sync period, for the situation report
+  situationReport: null,      // the last sync's report; shown on the Team screen until dismissed
   inCombat: false,            // true while engine is running real-time combat
   pendingSync: false,         // sync queued while in combat
 
@@ -232,6 +249,9 @@ export const useGameStore = create(
       capturedSettlements: [],
       contestedSettlements: [],
       minesAtDayStart: 0,
+      usedSupplies: [],
+      periodStats: { ...NO_STATS },
+      situationReport: null,
       inCombat: false,
       pendingSync: false,
       player: { ...startChar },
@@ -248,6 +268,8 @@ export const useGameStore = create(
     // Re-seed terrain with the loaded world seed
     initTerrain(savedState.worldSeed)
     set({
+      // Older save files don't have these
+      usedSupplies: [], periodStats: { ...NO_STATS }, situationReport: null,
       ...savedState,
       gamePhase: 'playing',
       uiMode: 'hub',
@@ -364,11 +386,17 @@ export const useGameStore = create(
   },
 
   clearDownReport() { set({ downReport: null }) },
+  // The report is kept (the next one compares against it); it's only marked as read
+  clearSituationReport() {
+    set(s => ({ situationReport: s.situationReport && { ...s.situationReport, seen: true } }))
+  },
 
   recruitAlly(allyId) {
     const s = get()
     const ally = s.allies.find(a => a.id === allyId)
     if (!ally || ally.status !== 'free') return { result: 'invalid' }
+    // Someone who turned this character down won't be asked again by them
+    if (s.player.refusedBy?.includes(allyId)) return { result: 'refused' }
 
     const settlement = s.settlements.find(se => se.allyId === allyId)
     if (!settlement) return { result: 'invalid' }
@@ -379,7 +407,10 @@ export const useGameStore = create(
       const rel = s.player.relationships.find(r => r.allyId === allyId)
       const trust = rel?.trust ?? 0
       const chance = trust > 30 ? 0.75 : trust < -30 ? 0.25 : 0.50
-      if (Math.random() >= chance) return { result: 'refused' }
+      if (Math.random() >= chance) {
+        set(s => ({ player: { ...s.player, refusedBy: [...(s.player.refusedBy ?? []), allyId] } }))
+        return { result: 'refused' }
+      }
     }
 
     set(s => ({
@@ -391,6 +422,7 @@ export const useGameStore = create(
       } : a),
       recruitedAllies: [...s.recruitedAllies, allyId],
       player: { ...s.player, reputation: s.player.reputation + 5 },
+      periodStats: { ...s.periodStats, recruits: s.periodStats.recruits + 1 },
     }))
     return { result: 'success' }
   },
@@ -452,16 +484,30 @@ export const useGameStore = create(
     return true
   },
 
-  resupplyStore() {
+  // Each character can use each store or magazine once per sync period.
+  // Returns false if this character has already used this one.
+  resupplyStore(settlementId) {
+    const key = supplyKey(get().activeAllyId, settlementId, 'store')
+    if (get().usedSupplies.includes(key)) return false
     set(s => ({
-      player: { ...s.player, missiles: 1, ammo: Math.min(50, (s.player.ammo ?? 0) + 20) }
+      usedSupplies: [...s.usedSupplies, key],
+      player: {
+        ...s.player, missiles: 1, ammo: Math.min(50, (s.player.ammo ?? 0) + 20),
+        // A store also refuels the snowcat or paramotor
+        fuel: s.player.vehicle ? 100 : s.player.fuel,
+      },
     }))
+    return true
   },
 
-  resupplyMagazine() {
+  resupplyMagazine(settlementId) {
+    const key = supplyKey(get().activeAllyId, settlementId, 'magazine')
+    if (get().usedSupplies.includes(key)) return false
     set(s => ({
-      player: { ...s.player, missiles: 1, ammo: 50, dynamite: 1 }
+      usedSupplies: [...s.usedSupplies, key],
+      player: { ...s.player, missiles: 1, ammo: 50, dynamite: 1 },
     }))
+    return true
   },
 
   consumeMissile() {
@@ -490,33 +536,33 @@ export const useGameStore = create(
     }))
   },
 
-  refuelGarage() {
+  // Garage refuel for the snowcat (the hangar refuels in ascendCableCar)
+  refuelVehicle() {
     set(s => ({
       player: { ...s.player, fuel: 100 }
     }))
   },
 
+  // Returns false if the team's snowcat is already taken
   acquireSnowcat() {
-    set(s => {
-      const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
-        .some(a => a.vehicle === 'snowcat' && a.status !== 'dead')
-      if (alreadyTaken) return {}
-      return {
-        player: { ...s.player, travelMode: 'snowcat', fuel: 100, vehicle: 'snowcat' },
-      }
-    })
+    const s = get()
+    if (vehicleHolder(s, 'snowcat')) return false
+    set(s => ({
+      player: { ...s.player, travelMode: 'snowcat', fuel: 100, vehicle: 'snowcat' },
+    }))
+    return true
   },
 
-  // Returns false if the team's paramotor is already taken
+  // Take off from a hangar, refuelled. Returns false if another character has the paramotor;
+  // the character already holding it can relaunch (I30).
   ascendCableCar() {
     const s = get()
-    const alreadyTaken = withActive(s.allies, s.activeAllyId, s.player)
-      .some(a => a.vehicle === 'paramotor' && a.status !== 'dead')
-    if (alreadyTaken) return false
+    const holder = vehicleHolder(s, 'paramotor')
+    if (holder && holder.id !== s.activeAllyId) return false
     // A snowcat is left behind at the hangar rather than lost
     if (s.player.vehicle === 'snowcat') s.abandonVehicle()
     set(s => ({
-      player: { ...s.player, travelMode: 'paramotor', vehicle: 'paramotor' },
+      player: { ...s.player, travelMode: 'paramotor', vehicle: 'paramotor', fuel: 100 },
     }))
     return true
   },
@@ -569,6 +615,7 @@ export const useGameStore = create(
       }
       return {
         sabotagedBuildings: newSabotaged,
+        periodStats: { ...s.periodStats, sabotages: s.periodStats.sabotages + 1 },
         enemyMorale: newMorale,
         collapseDay: newCollapseDay,
         gamePhase: won ? 'won' : s.gamePhase,
@@ -624,6 +671,8 @@ export const useGameStore = create(
 
   destroyEnemyVehicle(vehicleId) {
     set(s => {
+      // Already gone: a sniped vehicle can be reported twice (C8)
+      if (!s.enemyVehicles.some(v => v.id === vehicleId)) return {}
       // Destroying a besieging vehicle breaks the siege and brings collapse closer
       const besieging = s.contestedSettlements.some(c => c.vehicleId === vehicleId)
       return {
@@ -632,6 +681,7 @@ export const useGameStore = create(
         enemyMorale: Math.max(0, s.enemyMorale - KILL_MORALE),
         collapseDay: besieging ? Math.max(s.currentDay + 2, s.collapseDay - SIEGE_BROKEN_DAYS) : s.collapseDay,
         player: { ...s.player, reputation: s.player.reputation + 10 },
+        periodStats: { ...s.periodStats, kills: s.periodStats.kills + 1 },
       }
     })
   },
@@ -821,6 +871,40 @@ export const useGameStore = create(
     const won = enemyMorale <= 0 || currentDay >= collapseDay
     const lost = s.totalHeatMines > 0 && capturedHeatMines >= s.totalHeatMines
 
+    // 7. Situation report: where things stand, and what changed since the last report
+    const prev = s.situationReport
+    const team = newAllies.filter(a => s.recruitedAllies.includes(a.id))
+    const situationReport = {
+      day: currentDay,
+      time: rt,
+      enemy: {
+        morale: enemyMorale,
+        moraleChange: enemyMorale - (prev?.enemy.morale ?? 100),
+        vehicles: enemyVehicles.length,
+        vehicleChange: enemyVehicles.length - (prev?.enemy.vehicles ?? ENEMY_START),
+        sieges: contestedSettlements.length,
+        newSieges: contestedSettlements.filter(c => !s.contestedSettlements.some(o => o.id === c.id)).length,
+        captured: capturedSettlements.length - s.capturedSettlements.length,
+        minesLost,
+        minesHeld: capturedHeatMines,
+        totalMines: s.totalHeatMines,
+        officersCaptured: newAllies.filter(a => a.status === 'captured').length
+          - withActive(s.allies, s.activeAllyId, s.player).filter(a => a.status === 'captured').length,
+      },
+      friendly: {
+        settlementsHeld: s.settlements.length - capturedSettlements.length,
+        totalSettlements: s.settlements.length,
+        collapseDay,
+        collapseChange: collapseDay - (prev?.friendly.collapseDay ?? 40),
+        ...s.periodStats,
+        teamFree: team.filter(a => a.status === 'recruited').length,
+        teamInjured: team.filter(a => a.status === 'recruited' &&
+          Object.values(a.injuries ?? {}).some(v => v !== 'fine')).length,
+        teamCaptured: team.filter(a => a.status === 'captured').length,
+        teamKilled: team.filter(a => a.status === 'dead').length,
+      },
+    }
+
     set({
       reportTime: rt + 120,
       currentDay,
@@ -835,6 +919,9 @@ export const useGameStore = create(
       contestedSettlements,
       minesAtDayStart,
       pendingSync: false,
+      usedSupplies: [],
+      periodStats: { ...NO_STATS },
+      situationReport,
     })
   },
 
@@ -908,6 +995,9 @@ export const useGameStore = create(
         capturedSettlements:  s.capturedSettlements,
         contestedSettlements: s.contestedSettlements,
         minesAtDayStart:      s.minesAtDayStart,
+        usedSupplies:         s.usedSupplies,
+        periodStats:          s.periodStats,
+        situationReport:      s.situationReport,
         enemyMorale:          s.enemyMorale,
         collapseDay:          s.collapseDay,
         capturedHeatMines:    s.capturedHeatMines,

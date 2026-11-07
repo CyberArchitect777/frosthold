@@ -58,6 +58,7 @@ export default function App() {
   const [nearSettlement, setNearSettlement] = useState(null)
   const [gyroEnabled, setGyroEnabled] = useState(true)
   const [terrainDebug, setTerrainDebug] = useState(null)
+  const [engineKey, setEngineKey] = useState(0)  // bumped to rebuild the engine on a fresh canvas
   const [showDebug, setShowDebug] = useState(false)
   const showDebugRef = useRef(false)  // read by the per-frame engine bridge
   const [enemyBearing, setEnemyBearing] = useState(null)
@@ -221,14 +222,18 @@ export default function App() {
     if (paused || mode !== 'action') engine.pause()
 
     // Place settlement buildings at ally locations
-    const { settlements: currentSettlements } = useGameStore.getState()
+    const { settlements: currentSettlements, enemyVehicles: currentEnemies, abandonedVehicles: currentAbandoned } = useGameStore.getState()
     if (currentSettlements.length > 0) engine.setSettlements(currentSettlements)
+    // Vehicles too: after Continue they haven't changed, so their effects below don't fire
+    engine.setEnemyVehicles(currentEnemies)
+    engine.setAbandonedVehicles(currentAbandoned)
+    engine.setInjuries(currentPlayer.injuries)
 
     return () => {
       engine.dispose()
       engineRef.current = null
     }
-  }, [gamePhase, worldSeed]) // eslint-disable-line
+  }, [gamePhase, worldSeed, engineKey]) // eslint-disable-line
 
   // Pause engine whenever not in action mode
   useEffect(() => {
@@ -237,10 +242,23 @@ export default function App() {
       engineRef.current.pause()
       audioRef.current?.suspend()
     } else {
+      // Graphics lost while away (seen as a grey 3D view): start the engine again
+      if (engineRef.current.isContextLost()) { setEngineKey(k => k + 1); return }
       engineRef.current.resume()
       audioRef.current?.resume()
     }
   }, [isPaused, uiMode])
+
+  // Back to a phone app that dropped its graphics while the 3D view was showing: rebuild
+  useEffect(() => {
+    function onVisible() {
+      const { uiMode, isPaused } = useGameStore.getState()
+      if (document.visibilityState === 'visible' && uiMode === 'action' && !isPaused &&
+          engineRef.current?.isContextLost()) setEngineKey(k => k + 1)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [])
 
   // Start/stop combat buzz
   useEffect(() => {
@@ -439,6 +457,7 @@ export default function App() {
       enemyVehicles: s.enemyVehicles,
       capturedSettlements: s.capturedSettlements, contestedSettlements: s.contestedSettlements,
       minesAtDayStart: s.minesAtDayStart,
+      usedSupplies: s.usedSupplies, periodStats: s.periodStats, situationReport: s.situationReport,
       enemyMorale: s.enemyMorale,
       collapseDay: s.collapseDay, capturedHeatMines: s.capturedHeatMines,
       totalHeatMines: s.totalHeatMines, currentDay: s.currentDay, totalTime: s.totalTime,
@@ -470,6 +489,7 @@ export default function App() {
     <div style={{ position: 'fixed', inset: 0, background: '#0a1628' }}>
       {/* Three.js canvas — always mounted when playing */}
       <canvas
+        key={engineKey}
         ref={canvasRef}
         onClick={handleCanvasClick}
         style={{
@@ -662,12 +682,61 @@ function fmtTime(mins) {
 }
 
 // ---- Strategy Hub — team overview screen ----
+// Shown on the Team screen after each sync until dismissed
+function SituationReport({ report: r, onClose }) {
+  const signed = n => (n > 0 ? `+${n}` : `${n}`)
+  const Row = ({ label, value, note, warn, good }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+      <span style={{ color: '#5577aa' }}>{label}</span>
+      <span style={{ color: warn ? '#ee8080' : good ? '#80ee80' : '#a8d8ea', textAlign: 'right' }}>
+        {value}{note ? <span style={{ color: '#5577aa' }}> ({note})</span> : null}
+      </span>
+    </div>
+  )
+  const e = r.enemy, f = r.friendly
+  return (
+    <div style={{
+      width: 'min(380px, 94vw)', padding: '10px 14px', marginBottom: 14,
+      background: 'rgba(14,30,56,0.97)', border: '1px solid rgba(168,216,234,0.45)',
+      borderRadius: 6, fontSize: 10, letterSpacing: 1, lineHeight: 1.7,
+    }}>
+      <div style={{ fontSize: 11, letterSpacing: 3, fontWeight: 'bold', marginBottom: 6 }}>
+        SITUATION REPORT · DAY {r.day} · {fmtTime(r.time)}
+      </div>
+      <div style={{ fontSize: 9, letterSpacing: 3, color: '#e74c3c', marginTop: 4 }}>ENEMY</div>
+      <Row label="Morale" value={`${e.morale}%`} note={e.moraleChange ? signed(e.moraleChange) : null}
+        warn={e.moraleChange > 0} good={e.moraleChange < 0} />
+      <Row label="Vehicles" value={e.vehicles} note={e.vehicleChange ? signed(e.vehicleChange) : null} />
+      <Row label="Sieges under way" value={e.sieges} note={e.newSieges ? `${e.newSieges} new` : null} warn={e.newSieges > 0} />
+      <Row label="Settlements taken this sync" value={e.captured} warn={e.captured > 0} />
+      {e.officersCaptured > 0 && <Row label="Officers captured" value={e.officersCaptured} warn />}
+      <Row label="Heat mines held" value={`${e.minesHeld} / ${e.totalMines}`} note={e.minesLost ? `+${e.minesLost}` : null} warn={e.minesLost > 0} />
+      <div style={{ fontSize: 9, letterSpacing: 3, color: '#3498db', marginTop: 8 }}>RESISTANCE</div>
+      <Row label="Settlements held" value={`${f.settlementsHeld} / ${f.totalSettlements}`} />
+      <Row label="Enemy vehicles destroyed" value={f.kills} good={f.kills > 0} />
+      <Row label="Sabotage" value={f.sabotages} good={f.sabotages > 0} />
+      <Row label="Recruits" value={f.recruits} good={f.recruits > 0} />
+      <Row label="Team free" value={f.teamFree}
+        note={[f.teamInjured && `${f.teamInjured} injured`, f.teamCaptured && `${f.teamCaptured} captured`, f.teamKilled && `${f.teamKilled} killed`].filter(Boolean).join(', ') || null} />
+      <Row label="Expected collapse" value={`day ${f.collapseDay}`}
+        note={f.collapseChange ? `${signed(f.collapseChange)} days` : null} good={f.collapseChange < 0} warn={f.collapseChange > 0} />
+      <button onClick={onClose} style={{
+        marginTop: 8, background: 'transparent', border: '1px solid rgba(168,216,234,0.4)',
+        borderRadius: 4, color: '#a8d8ea', cursor: 'pointer', padding: '3px 12px',
+        fontSize: 9, fontFamily: 'Courier New, monospace', letterSpacing: 2,
+      }}>OK</button>
+    </div>
+  )
+}
+
 function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies }) {
   const player            = useGameStore(s => s.player)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
   const recruitedAllies   = useGameStore(s => s.recruitedAllies)
   const downReport        = useGameStore(s => s.downReport)
   const clearDownReport   = useGameStore(s => s.clearDownReport)
+  const situationReport   = useGameStore(s => s.situationReport)
+  const clearSituationReport = useGameStore(s => s.clearSituationReport)
   const reportTime        = useGameStore(s => s.reportTime)
   const enemyMorale = useGameStore(s => s.enemyMorale)
   const collapseDay       = useGameStore(s => s.collapseDay)
@@ -719,6 +788,10 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
             fontSize: 9, fontFamily: 'Courier New, monospace', letterSpacing: 2,
           }}>OK</button>
         </div>
+      )}
+
+      {situationReport && !situationReport.seen && (
+        <SituationReport report={situationReport} onClose={clearSituationReport} />
       )}
 
       {/* SYNC button */}
@@ -816,6 +889,7 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 11, letterSpacing: 2, fontWeight: 'bold' }}>{char.name}</span>
                   {isActive && <span style={{ fontSize: 8, color: '#a8d8ea', letterSpacing: 1, border: '1px solid rgba(168,216,234,0.4)', borderRadius: 3, padding: '1px 4px' }}>ACTIVE</span>}
+                  {char.vehicle && !gone && <span style={{ fontSize: 8, color: '#f39c12', letterSpacing: 1 }}>{char.vehicle === 'snowcat' ? '🚙 SNOWCAT' : '🪂 PARAMOTOR'}</span>}
                   {gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>{char.status === 'dead' ? 'KILLED' : 'CAPTURED'}</span>}
                   {frozen && !gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>FROZEN</span>}
                   {approach && !frozen && <span style={{ fontSize: 8, color: '#e6b020', letterSpacing: 1 }}>SYNC {Math.round(mLeft)}m</span>}
