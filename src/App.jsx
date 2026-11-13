@@ -9,11 +9,19 @@ import { StrategyMap } from './ui/StrategyMap.jsx'
 import { AllyPanel } from './ui/AllyPanel.jsx'
 import { AllyProfile } from './ui/AllyProfile.jsx'
 import { PauseMenu } from './ui/PauseMenu.jsx'
+import { Guide } from './ui/Guide.jsx'
+import { Options } from './ui/Options.jsx'
+import { useSettings } from './store/settingsStore.js'
+import { SnowcatIcon } from './ui/SnowcatIcon.jsx'
 
 export default function App() {
   const canvasRef = useRef(null)
   const engineRef = useRef(null)
   const audioRef  = useRef(null)
+  const soundStyle = useSettings(s => s.soundStyle)
+  const [showOptions, setShowOptions] = useState(false)
+  // One AudioManager per App mount, made on first need (game start or the Options test buttons)
+  const getAudio = () => audioRef.current ?? (audioRef.current = new AudioManager(useSettings.getState().soundStyle))
   const orientation = useOrientation()
   const gyro = useGyroscope()
 
@@ -112,9 +120,8 @@ export default function App() {
     const canvas = canvasRef.current
     const tier = detectPerformanceTier()
 
-    // Lazy-create AudioManager once per App mount; re-init on each game start
-    if (!audioRef.current) audioRef.current = new AudioManager()
-    audioRef.current.init()
+    // Re-init the shared AudioManager on each game start
+    getAudio().init()
 
     const { player } = useGameStore.getState()
     const engine = new GameEngine(canvas, worldSeed, tier, { x: player.position.x, z: player.position.z }, audioRef.current)
@@ -241,6 +248,9 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [])
 
+  // Sound style from the Options screen
+  useEffect(() => { audioRef.current?.setStyle(soundStyle) }, [soundStyle])
+
   // Start/stop combat buzz
   useEffect(() => {
     if (inCombat) audioRef.current?.startCombatBuzz()
@@ -353,6 +363,7 @@ export default function App() {
 
     const result = engineRef.current?.snipeFire(weapon)
     if (!result || !result.hit) {
+      if (weapon === 'gun') audioRef.current?.playRicochet()
       setSnipeFlash('MISSED')
       setTimeout(() => setSnipeFlash(null), 1000)
       return
@@ -440,8 +451,20 @@ export default function App() {
     URL.revokeObjectURL(url)
   }
 
+  // Options page (title screen and Team screen). Leaving it re-silences the
+  // game's sounds if a test button woke them while the 3D view is hidden.
+  const optionsPage = showOptions && (
+    <Options audio={getAudio()} onBack={() => {
+      setShowOptions(false)
+      if (gamePhase !== 'playing' || uiMode !== 'action' || isPaused) audioRef.current?.suspend()
+    }} />
+  )
+
   if (gamePhase === 'menu') {
-    return <TitleScreen onStart={() => useGameStore.getState().newGame()} onContinue={continueGame} hasSave={hasSave} onLoad={loadGame} />
+    return <>
+      <TitleScreen onStart={() => useGameStore.getState().newGame()} onContinue={continueGame} hasSave={hasSave} onLoad={loadGame} onOptions={() => setShowOptions(true)} />
+      {optionsPage}
+    </>
   }
 
   if (gamePhase === 'won') {
@@ -474,10 +497,12 @@ export default function App() {
           onProfile={handleSelectCharacter}
           onMap={() => setUiMode('strategy')}
           onSave={handleSaveGame}
+          onOptions={() => setShowOptions(true)}
           nearSettlement={nearSettlement}
           allies={allies}
         />
       )}
+      {uiMode === 'hub' && profileAllyId === undefined && optionsPage}
 
       {/* Ally profile — opened from team screen */}
       {uiMode === 'hub' && profileAllyId !== undefined && (
@@ -696,7 +721,7 @@ function SituationReport({ report: r, onClose }) {
   )
 }
 
-function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies }) {
+function StrategyHub({ onSync, onProfile, onMap, onSave, onOptions, nearSettlement, allies }) {
   const player            = useGameStore(s => s.player)
   const activeAllyId      = useGameStore(s => s.activeAllyId)
   const recruitedAllies   = useGameStore(s => s.recruitedAllies)
@@ -810,7 +835,7 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
       <button
         onClick={onSave}
         style={{
-          width: 'min(380px, 94vw)', padding: '10px 16px', marginBottom: 20,
+          width: 'min(380px, 94vw)', padding: '10px 16px', marginBottom: 8,
           background: 'rgba(14,30,56,0.9)',
           border: '1px solid rgba(168,216,234,0.35)',
           borderRadius: 6, cursor: 'pointer', fontFamily: 'Courier New, monospace',
@@ -822,6 +847,25 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
           <span style={{ fontSize: 12, letterSpacing: 3, fontWeight: 'bold' }}>SAVE GAME</span>
           <span style={{ fontSize: 9, color: '#5577aa', letterSpacing: 1 }}>Download save file to device</span>
+        </div>
+      </button>
+
+      {/* OPTIONS button */}
+      <button
+        onClick={onOptions}
+        style={{
+          width: 'min(380px, 94vw)', padding: '10px 16px', marginBottom: 20,
+          background: 'rgba(14,30,56,0.9)',
+          border: '1px solid rgba(168,216,234,0.35)',
+          borderRadius: 6, cursor: 'pointer', fontFamily: 'Courier New, monospace',
+          display: 'flex', alignItems: 'center', gap: 12,
+          color: '#a8d8ea',
+        }}
+      >
+        <span style={{ fontSize: 20 }}>⚙</span>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+          <span style={{ fontSize: 12, letterSpacing: 3, fontWeight: 'bold' }}>OPTIONS</span>
+          <span style={{ fontSize: 9, color: '#5577aa', letterSpacing: 1 }}>Sound effects</span>
         </div>
       </button>
 
@@ -856,7 +900,7 @@ function StrategyHub({ onSync, onProfile, onMap, onSave, nearSettlement, allies 
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <span style={{ fontSize: 11, letterSpacing: 2, fontWeight: 'bold' }}>{char.name}</span>
                   {isActive && <span style={{ fontSize: 8, color: '#a8d8ea', letterSpacing: 1, border: '1px solid rgba(168,216,234,0.4)', borderRadius: 3, padding: '1px 4px' }}>ACTIVE</span>}
-                  {char.vehicle && !gone && <span style={{ fontSize: 8, color: '#f39c12', letterSpacing: 1 }}>{char.vehicle === 'snowcat' ? '🚙 SNOWCAT' : '🪂 PARAMOTOR'}</span>}
+                  {char.vehicle && !gone && <span style={{ fontSize: 8, color: '#f39c12', letterSpacing: 1 }}>{char.vehicle === 'snowcat' ? <><SnowcatIcon /> SNOWCAT</> : '🪂 PARAMOTOR'}</span>}
                   {gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>{char.status === 'dead' ? 'KILLED' : 'CAPTURED'}</span>}
                   {frozen && !gone && <span style={{ fontSize: 8, color: '#e05555', letterSpacing: 1 }}>FROZEN</span>}
                   {approach && !frozen && <span style={{ fontSize: 8, color: '#e6b020', letterSpacing: 1 }}>SYNC {Math.round(mLeft)}m</span>}
@@ -1254,9 +1298,10 @@ function GunSight({ snipeState, snipeFlash, activeWeapon, onFire, onExit, onSwit
 }
 
 // ---- Title Screen ----
-function TitleScreen({ onStart, onContinue, hasSave, onLoad }) {
+function TitleScreen({ onStart, onContinue, hasSave, onLoad, onOptions }) {
   const fileInputRef = useRef(null)
   const [loadError, setLoadError] = useState(null)
+  const [showGuide, setShowGuide] = useState(false)
 
   function handleFileChange(e) {
     const file = e.target.files?.[0]
@@ -1350,6 +1395,34 @@ function TitleScreen({ onStart, onContinue, hasSave, onLoad }) {
       >
         NEW GAME
       </button>
+      <button
+        onClick={() => setShowGuide(true)}
+        style={{
+          width: 260,
+          background: 'rgba(14,30,56,0.8)',
+          border: '2px solid rgba(168,216,234,0.4)',
+          color: '#a8d8ea', cursor: 'pointer',
+          padding: '14px 0', borderRadius: 4,
+          fontSize: 16, fontFamily: 'Courier New, monospace',
+          letterSpacing: 3, marginBottom: 12,
+        }}
+      >
+        HOW TO PLAY
+      </button>
+      <button
+        onClick={onOptions}
+        style={{
+          width: 260,
+          background: 'rgba(14,30,56,0.8)',
+          border: '2px solid rgba(168,216,234,0.4)',
+          color: '#a8d8ea', cursor: 'pointer',
+          padding: '14px 0', borderRadius: 4,
+          fontSize: 16, fontFamily: 'Courier New, monospace',
+          letterSpacing: 3, marginBottom: 12,
+        }}
+      >
+        OPTIONS
+      </button>
 
       <input
         ref={fileInputRef}
@@ -1379,9 +1452,11 @@ function TitleScreen({ onStart, onContinue, hasSave, onLoad }) {
       )}
 
       <div style={{ marginTop: 32, fontSize: 10, color: '#446688', lineHeight: 1.8 }}>
-        <div>WASD / Arrows — Move | Mouse — Look | Tab — Map | Esc — Pause</div>
-        <div>Mobile: Tilt to steer | Rotate device for strategy map</div>
+        <div>WASD / Arrows — Move | Space — Fire | G — Weapon</div>
+        <div>E — Enter settlement | Tab — Team screen</div>
+        <div>Mobile: Tilt to steer | Portrait for the Team screen</div>
       </div>
+      {showGuide && <Guide onBack={() => setShowGuide(false)} />}
 
       <SnowCanvas />
     </div>

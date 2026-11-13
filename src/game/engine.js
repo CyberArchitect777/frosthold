@@ -458,7 +458,7 @@ export class GameEngine {
       const hAhead  = sampleHeight(playerState.position.x + fwdX, playerState.position.z + fwdZ)
       const hBehind = sampleHeight(playerState.position.x - fwdX, playerState.position.z - fwdZ)
       const slopeGradient = (hAhead - hBehind) / 2  // positive = uphill, negative = downhill
-      this._audio.update(dt, this._travelMode, playerState.speed, slopeGradient)
+      this._audio.update(dt, this._travelMode, playerState.speed, slopeGradient, playerState.velocity.y, playerState.rotation.y)
     }
 
     // Snipe mode: override camera to fixed position + independent rotation
@@ -641,14 +641,25 @@ export class GameEngine {
     if (!this._vparts) {
       const box = (w, h, d) => new THREE.BoxGeometry(w, h, d)
       this._vparts = {
-        jeepBody:  box(1.9, 0.8, 3.6),
-        jeepCab:   box(1.7, 0.7, 1.6),
-        wheel:     new THREE.CylinderGeometry(0.42, 0.42, 0.35, 12).rotateZ(Math.PI / 2),
-        gun:       new THREE.CylinderGeometry(0.06, 0.06, 1.4, 6).rotateX(Math.PI / 2),
+        catBody:   box(1.9, 0.7, 3.6),
+        catCab:    box(1.7, 0.95, 1.5),
+        track:     box(0.5, 0.75, 3.9),
+        roadWheel: new THREE.CylinderGeometry(0.28, 0.28, 0.52, 10).rotateZ(Math.PI / 2),
+        windscreen: box(1.4, 0.5, 0.05),
+        sideWindow: box(0.05, 0.45, 1.1),
+        rackPost:  box(0.08, 0.5, 0.08),
+        rackRail:  box(0.08, 0.08, 1.5),
+        rackBar:   box(1.78, 0.08, 0.08),
+        headlight: box(0.3, 0.2, 0.05),
+        gunMount:  box(0.3, 0.3, 0.3),
+        gun:       new THREE.CylinderGeometry(0.06, 0.06, 0.9, 6).rotateX(Math.PI / 2),
         cage:      new THREE.TorusGeometry(0.9, 0.05, 6, 20),
         seat:      box(0.6, 0.5, 0.5),
         wing:      box(3.2, 0.08, 1.2),
-        jeepMat:   new THREE.MeshLambertMaterial({ color: 0x8a7a55 }),
+        catMat:    new THREE.MeshLambertMaterial({ color: 0xc08a2e }),   // amber, unlike the enemy's olive
+        cabMat:    new THREE.MeshLambertMaterial({ color: 0xd9a441 }),
+        glassMat:  new THREE.MeshLambertMaterial({ color: 0x9fd3ea }),
+        lightMat:  new THREE.MeshLambertMaterial({ color: 0xfff3b0, emissive: 0x665f30 }),
         darkMat:   new THREE.MeshLambertMaterial({ color: 0x222222 }),
         metalMat:  new THREE.MeshLambertMaterial({ color: 0x9aa4ad }),
         wingMat:   new THREE.MeshLambertMaterial({ color: 0xd04a2a }),
@@ -657,15 +668,27 @@ export class GameEngine {
     return this._vparts
   }
 
-  // A civilian jeep with a mounted gun
+  // A tracked civilian snowcat with a mounted gun: cab at the front (−z), cargo rack at the back
   _makeSnowcatMesh() {
     const p = this._vehicleParts()
     const g = new THREE.Group()
     const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; g.add(m) }
-    add(p.jeepBody, p.jeepMat, 0, 0.8, 0)
-    add(p.jeepCab, p.jeepMat, 0, 1.55, 0.3)
-    for (const [x, z] of [[-1, 1.15], [1, 1.15], [-1, -1.15], [1, -1.15]]) add(p.wheel, p.darkMat, x, 0.42, z)
-    add(p.gun, p.darkMat, 0, 2.05, -0.4)
+    for (const x of [-1.1, 1.1]) {
+      add(p.track, p.darkMat, x, 0.38, 0)
+      for (const z of [-1.35, -0.45, 0.45, 1.35]) add(p.roadWheel, p.metalMat, x, 0.36, z)
+    }
+    add(p.catBody, p.catMat, 0, 0.95, 0)
+    add(p.catCab, p.cabMat, 0, 1.775, -0.8)
+    add(p.windscreen, p.glassMat, 0, 1.85, -1.56)
+    for (const x of [-0.86, 0.86]) add(p.sideWindow, p.glassMat, x, 1.85, -0.8)
+    for (const x of [-0.6, 0.6]) add(p.headlight, p.lightMat, x, 1.05, -1.81)
+    for (const x of [-0.85, 0.85]) {
+      for (const z of [0.3, 1.7]) add(p.rackPost, p.darkMat, x, 1.55, z)
+      add(p.rackRail, p.darkMat, x, 1.8, 1.0)
+    }
+    add(p.rackBar, p.darkMat, 0, 1.8, 1.7)
+    add(p.gunMount, p.darkMat, 0, 2.4, -0.6)
+    add(p.gun, p.darkMat, 0, 2.45, -1.1)
     return g
   }
 
@@ -913,9 +936,10 @@ export class GameEngine {
     if (!enemy) return false
     const hitChance = this._travelMode === 'snowcat' ? 0.50 : 0.25
     const hit = Math.random() < hitChance
+    this._audio?.playGunShot()              // every shot is heard; a miss also ricochets
+    if (!hit) this._audio?.playRicochet()
     if (hit) {
       this._showGlint(enemy.id)
-      this._audio?.playGunShot()
       enemy.hits = (enemy.hits ?? 0) + 1
       if (enemy.hits >= 5) {
         this._destroyCombatEnemy(enemy.id, true)
@@ -937,7 +961,8 @@ export class GameEngine {
   }
 
   _triggerExplosion(x, y, z) {
-    this._audio?.playExplosion()
+    const cp = this.camera.position
+    this._audio?.playExplosion(Math.hypot(x - cp.x, y - cp.y, z - cp.z))   // quieter (and a distant blast) far away
     // Core fireball
     const ballGeo = new THREE.SphereGeometry(1, 8, 6)
     const ballMat = new THREE.MeshBasicMaterial({ color: 0xff6600, transparent: true, opacity: 1 })
@@ -1049,7 +1074,7 @@ export class GameEngine {
       return { hit: true, vehicleId: bestVehicle.id, destroyed: true }
     } else {
       if (Math.random() < 0.55) {
-        this._audio?.playGunShot()
+        // The shot itself is played by App.handleSnipeFire (C12: was played twice on a hit)
         this._snipeVehicleHits[bestVehicle.id] = (this._snipeVehicleHits[bestVehicle.id] ?? 0) + 1
         const hits = this._snipeVehicleHits[bestVehicle.id]
         const destroyed = hits >= 5
@@ -1304,7 +1329,8 @@ export class GameEngine {
   }
 
   _fireEnemyMissileFrom(enemy) {
-    this._audio?.playEnemyFire()
+    const cp = this.camera.position
+    this._audio?.playEnemyFire(Math.hypot(enemy.x - cp.x, enemy.z - cp.z))
     const mGeo = new THREE.SphereGeometry(0.18, 6, 6)
     const mesh = new THREE.Mesh(mGeo, this._missileMat)
     const pp = this.camera.position

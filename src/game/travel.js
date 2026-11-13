@@ -1,4 +1,6 @@
 // Travel mode display data (HUD label and icon)
+import React from 'react'
+import { SnowcatIcon } from '../ui/SnowcatIcon.jsx'
 
 export const TRAVEL_MODES = {
   ski: {
@@ -7,7 +9,7 @@ export const TRAVEL_MODES = {
   },
   snowcat: {
     label: 'Snowcat',
-    icon: '🚙',
+    icon: React.createElement(SnowcatIcon),
   },
   paramotor: {
     label: 'Paramotor',

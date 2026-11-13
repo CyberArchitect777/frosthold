@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useGameStore, withActive, charPosition, canFirstAid, vehicleHolder, supplyKey } from '../store/gameStore.js'
+import { SnowcatIcon } from './SnowcatIcon.jsx'
 
 function fmtTime(mins) {
   const h = Math.floor(mins / 60) % 24
@@ -13,7 +14,7 @@ const BUILDING_TILE_DEFS = {
   church:          { label: 'CHURCH · REST',       sub: 'Shelter & sniping platform',  icon: '⛪', tileType: 'rest',      danger: false, recoveryRate: 'moderate' },
   store:           { label: 'STORE · SUPPLIES',    sub: 'Missile, ammo & fuel', icon: '🏪', tileType: 'store',     danger: false, recoveryRate: 'high'     },
   police_station:  { label: 'POLICE · REST',        sub: 'Rest — ally already recruited', icon: '🔓', tileType: 'police',   danger: false, recoveryRate: 'high'     },
-  garage:          { label: 'GARAGE · VEHICLES',   sub: 'Acquire & refuel snowcat',    icon: '🚙', tileType: 'garage',    danger: false, recoveryRate: 'moderate' },
+  garage:          { label: 'GARAGE · VEHICLES',   sub: 'Acquire & refuel snowcat',    icon: <SnowcatIcon />, tileType: 'garage',    danger: false, recoveryRate: 'moderate' },
   paramotor_hanger: { label: 'HANGAR · FLY',      sub: 'Refuel & launch paramotor',  icon: '🪂', tileType: 'ascend',    danger: false, recoveryRate: 'moderate' },
   heat_mine:       { label: 'HEAT MINE · DEFEND',  sub: 'Resistance asset — hold',     icon: '♨️', tileType: 'heat_mine', danger: false, recoveryRate: 'minimal'  },
   magazine:        { label: 'MAGAZINE · AMMO',     sub: 'Full resupply',      icon: '🎯', tileType: 'magazine',  danger: false, recoveryRate: 'low'      },
@@ -286,7 +287,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
               </div>
               {char.vehicle && (
                 <div style={{ fontSize: 9, color: '#a8d8ea', letterSpacing: 1, marginTop: 4 }}>
-                  {char.vehicle === 'snowcat' ? '🚙 HAS SNOWCAT' : '🪂 HAS PARAMOTOR'}
+                  {char.vehicle === 'snowcat' ? <><SnowcatIcon /> HAS SNOWCAT</> : '🪂 HAS PARAMOTOR'}
                 </div>
               )}
             </div>
@@ -348,7 +349,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
                 <ActionBtn
                   label={`CONTINUE — ${char.vehicle === 'snowcat' ? 'SNOWCAT' : 'PARAMOTOR'}`}
                   sub={`Riding ${char.vehicle === 'snowcat' ? 'snowcat' : 'paramotor'}`}
-                  icon={char.vehicle === 'snowcat' ? '🚙' : '🪂'}
+                  icon={char.vehicle === 'snowcat' ? <SnowcatIcon /> : '🪂'}
                   disabled={isFrozen}
                   onClick={onSki}
                 />
@@ -386,7 +387,7 @@ export function AllyProfile({ allyId, nearSettlement, onBack, onMap, onSki, onSw
           <ActionBtn
             label={`COLLECT ${nearbyVehicle.type === 'snowcat' ? 'SNOWCAT' : 'PARAMOTOR'}`}
             sub="Abandoned vehicle here"
-            icon={nearbyVehicle.type === 'snowcat' ? '🚙' : '🪂'}
+            icon={nearbyVehicle.type === 'snowcat' ? <SnowcatIcon /> : '🪂'}
             disabled={isFrozen}
             onClick={() => collectVehicle(nearbyVehicle.id)}
           />
