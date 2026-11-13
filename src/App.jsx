@@ -241,6 +241,9 @@ export default function App() {
   useEffect(() => {
     function onVisible() {
       const { uiMode, isPaused } = useGameStore.getState()
+      // No game sound while the app is in the background (it used to keep playing)
+      if (document.visibilityState === 'hidden') { audioRef.current?.suspend(); return }
+      if (uiMode === 'action' && !isPaused) audioRef.current?.resume()
       if (document.visibilityState === 'visible' && uiMode === 'action' && !isPaused &&
           engineRef.current?.isContextLost()) setEngineKey(k => k + 1)
     }

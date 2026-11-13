@@ -98,21 +98,27 @@ export class RecordedSounds {
     gain.connect(this._out)
     // Start somewhere random in the loop so repeats don't line up
     src.start(0, PAD + Math.random() * len)
-    return (this._loops[part] = { src, gain })
+    // tg/tr: the last gain/rate targets sent; at: when (ctx time)
+    return (this._loops[part] = { src, gain, tg: 0, tr: 1, at: -1 })
   }
 
+  // Glide a loop's gain (and playback rate) towards a target, taking about
+  // `secs`. Called every frame, so it only schedules when the target has
+  // really moved, at most 20 times a second. Uses setTargetAtTime, which
+  // starts from wherever the value is: never read AudioParam.value back —
+  // some browsers (e.g. Firefox) return the initial value, not the live one,
+  // which made every loop restart its fade from 0 each frame (2026-11-13 bug:
+  // a rough "doubled" wind until the app was hidden).
   _setLoop(part, gain, rate, secs = 0.15) {
     const l = this._loops[part]
     if (!l) return
     const now = this._ctx.currentTime
-    l.gain.gain.cancelScheduledValues(now)
-    l.gain.gain.setValueAtTime(l.gain.gain.value, now)
-    l.gain.gain.linearRampToValueAtTime(gain, now + secs)
-    if (rate != null) {
-      l.src.playbackRate.cancelScheduledValues(now)
-      l.src.playbackRate.setValueAtTime(l.src.playbackRate.value, now)
-      l.src.playbackRate.linearRampToValueAtTime(rate, now + secs)
-    }
+    if (now - l.at < 0.05) return
+    const tc = secs / 3
+    let sent = false
+    if (Math.abs(gain - l.tg) > 0.005) { l.gain.gain.setTargetAtTime(gain, now, tc); l.tg = gain; sent = true }
+    if (rate != null && Math.abs(rate - l.tr) > 0.003) { l.src.playbackRate.setTargetAtTime(rate, now, tc); l.tr = rate; sent = true }
+    if (sent) l.at = now
   }
 
   _stopLoop(part, secs = 0.4) {
@@ -120,9 +126,7 @@ export class RecordedSounds {
     if (!l) return
     delete this._loops[part]
     const now = this._ctx.currentTime
-    l.gain.gain.cancelScheduledValues(now)
-    l.gain.gain.setValueAtTime(l.gain.gain.value, now)
-    l.gain.gain.linearRampToValueAtTime(0, now + secs)
+    l.gain.gain.setTargetAtTime(0, now, secs / 4)
     l.src.stop(now + secs + 0.05)
     l.src.onended = () => { try { l.src.disconnect(); l.gain.disconnect() } catch {} }
   }
@@ -180,7 +184,7 @@ export class RecordedSounds {
       this._startLoop('tracks', PICKS.tracks)
       // Start-up: engine comes up from a low idle
       const e = this._loops.engine
-      if (e) { e.src.playbackRate.value = 0.6; this._setLoop('engine', 0.55, 0.8, 1.0) }
+      if (e) { e.src.playbackRate.value = 0.6; e.tr = 0.6; this._setLoop('engine', 0.55, 0.8, 1.0) }
     }
     if (mode === 'paramotor') {
       this._startLoop('paramotor', PICKS.paramotor)
